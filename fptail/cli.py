@@ -3,6 +3,7 @@ import json
 import re
 import sys
 import time
+import warnings
 
 import urllib3
 from smc import session
@@ -16,6 +17,11 @@ from fptail.filters import FilterError, apply_filters, build_filters
 from fptail.output import color_enabled, colorize, grep_lines
 
 DEFAULT_LINES = 10
+
+# fp-NGFW-SMC-python's SSLAdapter hardcodes urllib3's deprecated ssl_version=
+# kwarg on every connection; this is inside the vendored dependency, not
+# something we or the user can configure away.
+warnings.filterwarnings("ignore", message=r".*ssl_version.*", category=FutureWarning)
 
 
 def parse_args(argv=None):
