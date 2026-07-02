@@ -11,6 +11,7 @@ setup(
         "fp-NGFW-SMC-python-monitoring>=1.5.6",
         "websocket-client>=1.8.0",
         "packaging",
+        "urllib3",
     ],
     entry_points={
         "console_scripts": [

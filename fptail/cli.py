@@ -4,7 +4,9 @@ import re
 import sys
 import time
 
+import urllib3
 from smc import session
+from smc.api.exceptions import SMCException
 from smc_monitoring.models.constants import LogField
 from smc_monitoring.models.formatters import RawDictFormat, TableFormat
 from smc_monitoring.monitors.logs import LogQuery
@@ -149,6 +151,17 @@ def follow(query, args):
             backoff = min(backoff * 2, args.max_backoff)
 
 
+def _connection_hint(exc):
+    text = str(exc)
+    if "CERTIFICATE_VERIFY_FAILED" in text or "SSLError" in text:
+        return (
+            "TLS certificate verification failed. If this SMC uses a self-signed or "
+            "internal CA certificate, either set 'verify = /path/to/ca-bundle.pem' in "
+            "the config file, or pass --insecure (only on a trusted network)."
+        )
+    return None
+
+
 def main(argv=None):
     args = parse_args(argv)
 
@@ -168,6 +181,9 @@ def main(argv=None):
         print("fptail: %s" % exc, file=sys.stderr)
         return 2
 
+    if config.verify is False:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
     try:
         query = build_query(args)
     except FilterError as exc:
@@ -179,20 +195,34 @@ def main(argv=None):
         file=sys.stderr,
     )
 
-    session.login(
-        url=config.url,
-        api_key=config.api_key,
-        verify=config.verify,
-        domain=config.domain,
-        api_version=config.api_version,
-        timeout=config.timeout,
-    )
+    try:
+        session.login(
+            url=config.url,
+            api_key=config.api_key,
+            verify=config.verify,
+            domain=config.domain,
+            api_version=config.api_version,
+            timeout=config.timeout,
+        )
+    except SMCException as exc:
+        print("fptail: could not log in to %s: %s" % (config.url, exc), file=sys.stderr)
+        hint = _connection_hint(exc)
+        if hint:
+            print("fptail: %s" % hint, file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print("fptail: unexpected error connecting to %s: %s" % (config.url, exc), file=sys.stderr)
+        return 1
+
     try:
         print_stored(query, args)
         if args.follow:
             follow(query, args)
     except KeyboardInterrupt:
         pass
+    except SMCException as exc:
+        print("fptail: SMC error: %s" % exc, file=sys.stderr)
+        return 1
     finally:
         session.logout()
 
