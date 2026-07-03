@@ -25,3 +25,11 @@ def colorize(text: str) -> str:
 def grep_lines(text: str, pattern: "re.Pattern") -> str:
     kept = [line for line in text.splitlines() if pattern.search(line)]
     return "\n".join(kept) + ("\n" if kept else "")
+
+
+def strip_trailing_padding(text: str) -> str:
+    """TableFormat pads every column to the widest value in the batch, which can
+    leave short rows with a lot of dead trailing whitespace. On a narrower terminal
+    that padding wraps onto the next line and looks like a blank line, so strip it."""
+    lines = text.split("\n")
+    return "\n".join(line.rstrip() for line in lines)

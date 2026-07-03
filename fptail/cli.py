@@ -14,7 +14,7 @@ from smc_monitoring.monitors.logs import LogQuery
 
 from fptail.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from fptail.filters import FilterError, apply_filters, build_filters
-from fptail.output import color_enabled, colorize, grep_lines
+from fptail.output import color_enabled, colorize, grep_lines, strip_trailing_padding
 
 DEFAULT_LINES = 10
 
@@ -104,6 +104,8 @@ def render_stored(query, records, args):
     else:
         text = TableFormat(query).formatted(list(records))
 
+    if not args.json:
+        text = strip_trailing_padding(text)
     if args.grep:
         text = grep_lines(text, re.compile(args.grep))
     if not args.json and color_enabled(args.no_color):
@@ -142,6 +144,7 @@ def follow(query, args):
             else:
                 for text in query.fetch_live(formatter=TableFormat):
                     backoff = 1
+                    text = strip_trailing_padding(text)
                     if grep_re:
                         text = grep_lines(text, grep_re)
                     if use_color:
