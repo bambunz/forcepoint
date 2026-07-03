@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import signal
 import sys
 import time
 import warnings
@@ -22,6 +23,17 @@ DEFAULT_LINES = 10
 # kwarg on every connection; this is inside the vendored dependency, not
 # something we or the user can configure away.
 warnings.filterwarnings("ignore", message=r".*ssl_version.*", category=FutureWarning)
+
+# The vendored smc_monitoring websocket protocol catches KeyboardInterrupt itself
+# and just ends the stream generator cleanly, so it never reaches our code as an
+# exception. We register our own SIGINT handler and poll this flag instead of
+# relying on KeyboardInterrupt propagating out of the library.
+_stop_requested = False
+
+
+def _handle_sigint(signum, frame):
+    global _stop_requested
+    _stop_requested = True
 
 
 def parse_args(argv=None):
@@ -98,6 +110,9 @@ def build_query(args):
 
 
 def render_stored(query, records, args):
+    if not records:
+        return ""
+
     if args.json:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         text = "\n".join(lines) + ("\n" if lines else "")
@@ -119,6 +134,8 @@ def print_stored(query, args):
     records = []
     for batch in query.fetch_raw():
         records.extend(batch)
+        if _stop_requested:
+            break
     records.reverse()  # SMC returns newest-first; tail shows oldest-to-newest
     text = render_stored(query, records, args)
     if text:
@@ -131,7 +148,7 @@ def follow(query, args):
     use_color = color_enabled(args.no_color)
     backoff = 1
 
-    while True:
+    while not _stop_requested:
         try:
             if args.json:
                 for batch in query.fetch_live(formatter=RawDictFormat):
@@ -141,6 +158,8 @@ def follow(query, args):
                         if grep_re and not grep_re.search(line):
                             continue
                         print(line, flush=True)
+                    if _stop_requested:
+                        break
             else:
                 for text in query.fetch_live(formatter=TableFormat):
                     backoff = 1
@@ -152,9 +171,13 @@ def follow(query, args):
                     if text:
                         sys.stdout.write(text)
                         sys.stdout.flush()
+                    if _stop_requested:
+                        break
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:
+            if _stop_requested:
+                break
             print("fptail: stream error (%s), reconnecting in %ss..." % (exc, backoff), file=sys.stderr)
             time.sleep(backoff)
             backoff = min(backoff * 2, args.max_backoff)
@@ -172,6 +195,8 @@ def _connection_hint(exc):
 
 
 def main(argv=None):
+    signal.signal(signal.SIGINT, _handle_sigint)
+
     args = parse_args(argv)
 
     try:
