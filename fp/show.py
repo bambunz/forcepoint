@@ -59,21 +59,37 @@ def enumerate_domains():
     return sorted((d.name for d in AdminDomain.objects.all()), key=str.lower)
 
 
+def normalize_domains(requested):
+    """Split repeated and comma-separated --domain values into a flat list:
+    --domain 'a,b' --domain c -> ['a', 'b', 'c']."""
+    names = []
+    for value in requested or []:
+        names.extend(n.strip() for n in value.split(",") if n.strip())
+    return names
+
+
 def select_domains(requested, config, prog):
     """Shared --domain resolution for the multi-domain subcommands.
 
-    Explicit --domain values win, except that 'all' (alone or mixed in, or no
-    --domain at all) means enumerate every AdminDomain the API key can see
-    (requires Shared Domain visibility). If enumeration is not permitted,
+    Priority: explicit --domain values (repeatable and/or comma-separated)
+    win; without the flag, the profile's configured domain is used; a profile
+    without a domain means every AdminDomain the API key can see. 'all'
+    (as flag value or config domain) forces the enumerate-everything path,
+    which requires Shared Domain visibility; if enumeration is not permitted,
     fall back to the profile's configured domain.
     """
-    if requested and not any(d.lower() == ALL for d in requested):
-        return list(requested)
+    names = normalize_domains(requested)
+    if names and not any(n.lower() == ALL for n in names):
+        return names
+
+    if not names:  # no --domain given: config decides
+        if config.domain and config.domain.lower() != ALL:
+            return [config.domain]
 
     try:
-        names = enumerate_domains()
-        if names:
-            return names
+        all_names = enumerate_domains()
+        if all_names:
+            return all_names
     except SMCException as exc:
         print(
             "%s: cannot enumerate admin domains (%s) - falling back to the "
@@ -81,7 +97,7 @@ def select_domains(requested, config, prog):
             file=sys.stderr,
         )
 
-    if config.domain:
+    if config.domain and config.domain.lower() != ALL:
         return [config.domain]
     raise ConfigError(
         "could not determine which domains to query - the API key cannot "
@@ -91,11 +107,16 @@ def select_domains(requested, config, prog):
 
 def initial_login_domain(requested, config):
     """Domain to open the first session in, before select_domains() runs."""
-    explicit = [d for d in (requested or []) if d.lower() != ALL]
-    if requested and not explicit:
+    names = normalize_domains(requested)
+    explicit = [n for n in names if n.lower() != ALL]
+    if explicit:
+        return explicit[0]
+    if names:
         # only 'all' was given: enumeration needs Shared Domain
         return SHARED_DOMAIN
-    return explicit[0] if explicit else (config.domain or SHARED_DOMAIN)
+    if config.domain and config.domain.lower() != ALL:
+        return config.domain
+    return SHARED_DOMAIN
 
 
 def run_domains(args):

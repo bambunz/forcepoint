@@ -49,8 +49,10 @@ def add_parser(sub):
     )
     pending.add_argument(
         "--domain", action="append",
-        help="limit to this administrative domain (repeatable; 'all' or omitted = "
-             "all domains visible to the API key; `fp show domains` lists the choices)",
+        help="administrative domain(s) to query, repeatable or comma-separated "
+             "('domain1,domain2'); 'all' = every domain visible to the API key. "
+             "Default: the profile's domain, or all domains if the profile has "
+             "none. `fp show domains` lists the choices",
     )
     pending.add_argument("--profile", default="default", help="config profile/section name (default: %(default)s)")
     pending.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="path to config file (default: %(default)s)")
@@ -162,9 +164,10 @@ def run_pending(args):
     if config.verify is False:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+    requested = show.normalize_domains(args.domain)
+    domains_label = ",".join(requested) if requested else (config.domain or "all")
     print(
-        "%s: profile=%s url=%s domains=%s"
-        % (PROG, args.profile, config.url, ",".join(args.domain) if args.domain else "all"),
+        "%s: profile=%s url=%s domains=%s" % (PROG, args.profile, config.url, domains_label),
         file=sys.stderr,
     )
 

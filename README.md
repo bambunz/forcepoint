@@ -213,17 +213,25 @@ Acme-Corp     Acme Corp    1000002     SECNODE  Bound   Fw-Node-2          2027-
 Widgets-Inc   Widgets Inc  1000010     Mgmt     Bound   Management Server  2027-06-30  2027-06-30
 ```
 
-By default all administrative domains visible to the API key are queried (this
-requires Shared Domain visibility; if the key can't enumerate domains, `fp` falls
-back to the profile's configured domain and says so). Restrict with `--domain`,
-repeatable:
+Domain selection (same rules for `fp changes pending` and `fp license cron`):
+
+1. No `--domain` flag → the profile's configured `domain =` is queried.
+2. Profile has no `domain =` (or has `domain = all`) → every domain visible to
+   the API key is queried (requires Shared Domain visibility; if the key can't
+   enumerate domains, `fp` falls back to the profile domain and says so).
+3. `--domain all` → every visible domain, regardless of config.
+4. `--domain 'domain1,domain2'` → exactly those; comma-separated and/or repeated
+   flags both work.
 
 ```bash
-# All domains (explicitly or by omission)
+# Profile domain only (or everything, if the profile has no domain)
 fp licenses
+
+# Every visible domain
 fp license --domain all
 
-# Only two specific domains
+# A specific list: comma-separated, repeated flags, or both
+fp license --domain 'Acme-Corp,Widgets-Inc'
 fp license --domain Acme-Corp --domain Widgets-Inc
 
 # JSON for scripting
@@ -251,7 +259,8 @@ different admin domain, or to an element that has since been deleted.
 `fp license` resolves these across domains automatically: when the same license
 shows a real element name in its home domain, the `<Unknown>` rows are filled in
 as `name (domain)` — e.g. `Fw-Node-1 (Acme-Corp)`. This works whenever the home
-domain is part of the query, which it is by default (`all`).
+domain is part of the query, so it is most effective with `--domain all` (or a
+profile without a `domain =`, which queries everything).
 
 Licenses still showing `<Unknown>` after that are bound to an element this API
 key cannot see in any queried domain (a domain outside your permissions, or a
@@ -307,7 +316,7 @@ failures.
 | Flag | Description |
 |---|---|
 | `--days N` | Alert threshold in days (default: 30). |
-| `--domain NAME` | Limit to this admin domain (repeatable; `all` or omitted = all visible domains). |
+| `--domain NAME` | Domain(s) to query: repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
 | `--to ADDR` | Recipient (repeatable; overrides config `to =`). |
 | `--from ADDR` | Sender (overrides config `from =`). |
 | `--smtp-host / --smtp-port / --smtp-user / --smtp-password / --starttls` | SMTP overrides. |
@@ -318,7 +327,7 @@ failures.
 
 | Flag | Description |
 |---|---|
-| `--domain NAME` | Limit to this admin domain (repeatable; `all` or omitted = all visible domains). |
+| `--domain NAME` | Domain(s) to query: repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
 | `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
 | `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
 | `--url URL` | SMC API URL. |
@@ -345,15 +354,19 @@ Acme-Corp  fw-cluster-1  2026-07-12 15:24:40 (GMT)  stonegate.object.update  Rul
 Acme-Corp  fw-cluster-1  2026-07-12 15:30:00 (GMT)  stonegate.object.update  DMZ-net    ale       ...          boss
 ```
 
-Domain selection works exactly like `fp license`: all visible domains by
-default, `--domain` (repeatable, `all` accepted) to restrict, and
+Domain selection works exactly like `fp license`: the profile's domain by
+default (or every visible domain if the profile has none), `--domain` for an
+explicit choice (`all`, comma-separated list, or repeated flags), and
 `fp changes pending show domains` lists the choices. Rows not yet approved are
 highlighted in yellow. Engines whose type doesn't support pending changes are
 silently skipped.
 
 ```bash
-# Everything, everywhere
+# Profile domain (or everything, if the profile has no domain)
 fp changes pending
+
+# Everything, everywhere
+fp changes pending --domain all
 
 # One customer domain, CSV for the change-review ticket
 fp changes pending --domain Acme-Corp --csv > pending-acme.csv
@@ -366,7 +379,7 @@ fp changes pending --json | jq -c 'select(.approved_on == "")'
 
 | Flag | Description |
 |---|---|
-| `--domain NAME` | Limit to this admin domain (repeatable; `all` or omitted = all visible domains). |
+| `--domain NAME` | Domain(s) to query: repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
 | `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
 | `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
 | `--url URL` | SMC API URL. |
