@@ -22,7 +22,6 @@ SHARED_DOMAIN = show.SHARED_DOMAIN
 
 COLUMNS = [
     ("domain", "Domain"),
-    ("customer", "Customer"),
     ("license_id", "License Id"),
     ("type", "Type"),
     ("status", "Status"),
@@ -31,7 +30,18 @@ COLUMNS = [
     ("maintenance_expires", "Maintenance Expires"),
 ]
 
-CRON_COLUMNS = COLUMNS + [("days_left", "Days Left")]
+CUSTOMER_COLUMN = ("customer", "Customer")
+
+
+def _columns(show_customer):
+    cols = list(COLUMNS)
+    if show_customer:
+        cols.insert(1, CUSTOMER_COLUMN)
+    return cols
+
+
+# the cron email always includes the customer
+CRON_COLUMNS = _columns(True) + [("days_left", "Days Left")]
 
 RESET = "\x1b[0m"
 RED = "\x1b[31m"
@@ -62,6 +72,10 @@ def add_parser(sub):
     p.add_argument("--api-key", help="SMC API key")
     p.add_argument("--api-version", help="SMC API version override")
     p.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
+    p.add_argument(
+        "--show-customer", action="store_true",
+        help="add the Customer column to table/CSV output",
+    )
     p.add_argument(
         "-d", "--details", action="store_true",
         help="show every field the SMC returns per license (binding serial/POS, "
@@ -223,15 +237,19 @@ def _status_color(row):
     return None
 
 
-def _all_fieldnames(rows):
-    """Standard columns first, then every extra detail field seen in any row."""
-    names = [k for k, _ in COLUMNS]
-    extras = sorted({k for r in rows for k in r} - set(names))
-    return names + extras
+def _all_fieldnames(rows, columns, details):
+    """Selected columns first, then every extra detail field seen in any row.
+    Without --details the customer field only appears via --show-customer."""
+    names = [k for k, _ in columns]
+    extras = {k for r in rows for k in r} - set(names)
+    if not details:
+        extras.discard("customer")
+    return names + sorted(extras)
 
 
-def output_csv(rows):
-    writer = csv.DictWriter(sys.stdout, fieldnames=_all_fieldnames(rows), restval="")
+def output_csv(rows, columns, details):
+    writer = csv.DictWriter(sys.stdout, fieldnames=_all_fieldnames(rows, columns, details),
+                            restval="", extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
 
@@ -263,8 +281,8 @@ def table_lines(rows, columns):
     return lines
 
 
-def output_table(rows, use_color):
-    lines = table_lines(rows, COLUMNS)
+def output_table(rows, use_color, columns=None):
+    lines = table_lines(rows, columns or COLUMNS)
     print(lines[0])
     print(lines[1])
     for row, line in zip(rows, lines[2:]):
@@ -476,15 +494,16 @@ def run(args):
         print("%s: error: %s" % (PROG, err), file=sys.stderr)
 
     if rows:
+        cols = _columns(args.show_customer)
         if args.json:
             for row in rows:
                 print(json.dumps(row, separators=(",", ":")))
         elif args.csv:
-            output_csv(rows)
+            output_csv(rows, cols, args.details)
         elif args.details:
             output_details(rows, color_enabled(args.no_color))
         else:
-            output_table(rows, color_enabled(args.no_color))
+            output_table(rows, color_enabled(args.no_color), cols)
             unknown = sum(1 for r in rows if _is_unknown(r["bound_to"]))
             if unknown:
                 print(

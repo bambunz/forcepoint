@@ -206,12 +206,16 @@ interchangeable.
 ```
 $ fp license
 fp license: profile=default url=https://smc.acme.example:8082 domains=all
-Domain        Customer     License Id  Type     Status  Bound To           Expires     Maintenance Expires
-------------------------------------------------------------------------------------------------------------
-Acme-Corp     Acme Corp    1000001     SECNODE  Bound   Fw-Node-1          2027-01-31  2026-12-31
-Acme-Corp     Acme Corp    1000002     SECNODE  Bound   Fw-Node-2          2027-01-31  2026-12-31
-Widgets-Inc   Widgets Inc  1000010     Mgmt     Bound   Management Server  2027-06-30  2027-06-30
+Domain        License Id  Type     Status  Bound To           Expires     Maintenance Expires
+------------------------------------------------------------------------------------------------
+Acme-Corp     1000001     SECNODE  Bound   Fw-Node-1          2027-01-31  2026-12-31
+Acme-Corp     1000002     SECNODE  Bound   Fw-Node-2          2027-01-31  2026-12-31
+Widgets-Inc   1000010     Mgmt     Bound   Management Server  2027-06-30  2027-06-30
 ```
+
+`--show-customer` adds a Customer column (the license's `customer_name`) after
+Domain, in both table and CSV output. `--json` always carries the `customer`
+field, and `--details` always shows it.
 
 Domain selection (same rules for `fp changes pending` and `fp license cron`):
 
@@ -274,7 +278,8 @@ bindings remain.
 
 `fp license cron` checks every license's expiration date and, when any expire
 within N days (default 30, already-expired always included), emails a table like
-the normal license output plus a **Days Left** column. When nothing is close to
+the normal license output plus **Customer** and **Days Left** columns (the email
+always includes the customer). When nothing is close to
 expiry it sends nothing and exits 0 — safe to run unattended.
 
 SMTP settings live in an `[smtp]` section of the same config file:
@@ -334,6 +339,7 @@ failures.
 | `--api-key KEY` | SMC API key. |
 | `--api-version VER` | SMC API version override. |
 | `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
+| `--show-customer` | Add the Customer column to table/CSV output. |
 | `-d, --details` | Show every field the SMC returns per license (binding serial/POS, features, customer name, ...). Table mode switches to per-license blocks; `--json`/`--csv` gain the extra fields. |
 | `--json` | Emit newline-delimited JSON instead of a table (mutually exclusive with `--csv`). |
 | `--csv` | Emit CSV with a header row instead of a table. |
