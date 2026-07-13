@@ -59,6 +59,45 @@ def enumerate_domains():
     return sorted((d.name for d in AdminDomain.objects.all()), key=str.lower)
 
 
+def select_domains(requested, config, prog):
+    """Shared --domain resolution for the multi-domain subcommands.
+
+    Explicit --domain values win, except that 'all' (alone or mixed in, or no
+    --domain at all) means enumerate every AdminDomain the API key can see
+    (requires Shared Domain visibility). If enumeration is not permitted,
+    fall back to the profile's configured domain.
+    """
+    if requested and not any(d.lower() == ALL for d in requested):
+        return list(requested)
+
+    try:
+        names = enumerate_domains()
+        if names:
+            return names
+    except SMCException as exc:
+        print(
+            "%s: cannot enumerate admin domains (%s) - falling back to the "
+            "profile domain; pass --domain to be explicit" % (prog, exc),
+            file=sys.stderr,
+        )
+
+    if config.domain:
+        return [config.domain]
+    raise ConfigError(
+        "could not determine which domains to query - the API key cannot "
+        "enumerate domains and no domain is set in the profile; pass --domain"
+    )
+
+
+def initial_login_domain(requested, config):
+    """Domain to open the first session in, before select_domains() runs."""
+    explicit = [d for d in (requested or []) if d.lower() != ALL]
+    if requested and not explicit:
+        # only 'all' was given: enumeration needs Shared Domain
+        return SHARED_DOMAIN
+    return explicit[0] if explicit else (config.domain or SHARED_DOMAIN)
+
+
 def run_domains(args):
     try:
         config = load_config(

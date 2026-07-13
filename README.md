@@ -11,6 +11,7 @@ fp COMMAND [options]
 |---|---|
 | `fp logtail` | `tail(1)`-style live/stored log viewer (the former `fptail`) |
 | `fp license` / `fp licenses` | License inventory — type, status, binding, expiry — per admin domain |
+| `fp changes pending` | Changes pending approval/commit on each engine, per admin domain |
 | `fp show domains` | List the admin domains you can pass to `--domain` (including `all`) |
 
 ## Requirements
@@ -227,6 +228,9 @@ fp license --domain Acme-Corp --domain Widgets-Inc
 
 # JSON for scripting
 fp license --json | jq -r 'select(.status != "Bound") | .license_id'
+
+# CSV export (header included), e.g. straight into a spreadsheet
+fp license --csv > licenses.csv
 ```
 
 Unbound/unassigned licenses are highlighted in yellow in table output.
@@ -242,7 +246,55 @@ Unbound/unassigned licenses are highlighted in yellow in table output.
 | `--api-key KEY` | SMC API key. |
 | `--api-version VER` | SMC API version override. |
 | `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
-| `--json` | Emit newline-delimited JSON instead of a table. |
+| `--json` | Emit newline-delimited JSON instead of a table (mutually exclusive with `--csv`). |
+| `--csv` | Emit CSV with a header row instead of a table. |
+| `--no-color` | Disable ANSI color output (also respects `NO_COLOR`). |
+
+## fp changes
+
+Configuration-change inspection. First (and currently only) subcommand:
+`pending` — the changes waiting for approval/commit on each engine (what the
+Management Client shows as "Pending Changes"; requires SMC >= 6.2).
+
+```
+$ fp changes pending
+fp changes: profile=default url=https://smc.acme.example:8082 domains=all
+Domain     Engine        Changed On                 Event Type               Element    Modifier  Approved On  Approver
+------------------------------------------------------------------------------------------------------------------------
+Acme-Corp  fw-cluster-1  2026-07-12 15:24:40 (GMT)  stonegate.object.update  Rule @112  admin
+Acme-Corp  fw-cluster-1  2026-07-12 15:30:00 (GMT)  stonegate.object.update  DMZ-net    ale       ...          boss
+```
+
+Domain selection works exactly like `fp license`: all visible domains by
+default, `--domain` (repeatable, `all` accepted) to restrict, and
+`fp changes pending show domains` lists the choices. Rows not yet approved are
+highlighted in yellow. Engines whose type doesn't support pending changes are
+silently skipped.
+
+```bash
+# Everything, everywhere
+fp changes pending
+
+# One customer domain, CSV for the change-review ticket
+fp changes pending --domain Acme-Corp --csv > pending-acme.csv
+
+# Unapproved only, via jq
+fp changes pending --json | jq -c 'select(.approved_on == "")'
+```
+
+### changes pending flags
+
+| Flag | Description |
+|---|---|
+| `--domain NAME` | Limit to this admin domain (repeatable; `all` or omitted = all visible domains). |
+| `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
+| `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
+| `--url URL` | SMC API URL. |
+| `--api-key KEY` | SMC API key. |
+| `--api-version VER` | SMC API version override. |
+| `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
+| `--json` | Emit newline-delimited JSON instead of a table (mutually exclusive with `--csv`). |
+| `--csv` | Emit CSV with a header row instead of a table. |
 | `--no-color` | Disable ANSI color output (also respects `NO_COLOR`). |
 
 ## fp show
@@ -270,9 +322,10 @@ choices without leaving the command you're typing:
 fp show domains
 fp logtail show domains
 fp license show domains
+fp changes pending show domains
 ```
 
-All three are equivalent. `--json` emits the list as a JSON array. Connection
+All four are equivalent. `--json` emits the list as a JSON array. Connection
 flags (`--profile`, `--url`, `--api-key`, `--insecure`, ...) work as usual.
 
 ## How it works
@@ -280,9 +333,10 @@ flags (`--profile`, `--url`, `--api-key`, `--insecure`, ...) work as usual.
 `fp` uses [`smc-python`](https://github.com/Forcepoint/fp-NGFW-SMC-python) to log in to
 the SMC API. `logtail` opens a `LogQuery` against `/monitoring/log/socket` — the same
 websocket endpoint the Management Client's Logs view uses — with filters compiled into
-the SMC's native query filter format and evaluated server-side. `license` walks the
-requested admin domains with `session.switch_domain()` and reads each domain's
-`system/licenses` resource.
+the SMC's native query filter format and evaluated server-side. `license` and
+`changes pending` walk the requested admin domains with `session.switch_domain()`,
+reading each domain's `system/licenses` resource and each engine's
+`pending_changes` resource respectively.
 
 ## Known limitations
 

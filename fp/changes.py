@@ -5,29 +5,27 @@ import warnings
 
 import urllib3
 from smc import session
-from smc.administration.system import System
-from smc.api.exceptions import SMCException
+from smc.core.engine import Engine
+from smc.api.exceptions import SMCException, UnsupportedEngineFeature
 
 from fp import show
 from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from fp.output import color_enabled, strip_trailing_padding
 
-PROG = "fp license"
-
-SHARED_DOMAIN = show.SHARED_DOMAIN
+PROG = "fp changes"
 
 COLUMNS = [
     ("domain", "Domain"),
-    ("license_id", "License Id"),
-    ("type", "Type"),
-    ("status", "Status"),
-    ("bound_to", "Bound To"),
-    ("expiration_date", "Expires"),
-    ("maintenance_expires", "Maintenance Expires"),
+    ("engine", "Engine"),
+    ("changed_on", "Changed On"),
+    ("event_type", "Event Type"),
+    ("element", "Element"),
+    ("modifier", "Modifier"),
+    ("approved_on", "Approved On"),
+    ("approver", "Approver"),
 ]
 
 RESET = "\x1b[0m"
-RED = "\x1b[31m"
 YELLOW = "\x1b[33m"
 
 # Same vendored SSLAdapter deprecation noise as logtail; see fp/logtail.py.
@@ -36,48 +34,57 @@ warnings.filterwarnings("ignore", message=r".*ssl_version.*", category=FutureWar
 
 def add_parser(sub):
     p = sub.add_parser(
-        "license",
-        aliases=["licenses"],
-        help="list SMC licenses with type and status, per admin domain",
-        description="List SMC licenses (type, status, binding, expiry) for all "
-                    "administrative domains or a chosen subset.",
+        "changes",
+        help="inspect configuration changes on the SMC",
+        description="Inspect configuration changes on the SMC.",
     )
-    p.add_argument(
+    ssub = p.add_subparsers(dest="changes_what", metavar="WHAT", required=True)
+
+    pending = ssub.add_parser(
+        "pending",
+        help="show changes pending approval/commit on each engine, per admin domain",
+        description="Show configuration changes that are pending (not yet "
+                    "approved/committed) on each engine, for all administrative "
+                    "domains or a chosen subset. Requires SMC >= 6.2.",
+    )
+    pending.add_argument(
         "--domain", action="append",
         help="limit to this administrative domain (repeatable; 'all' or omitted = "
              "all domains visible to the API key; `fp show domains` lists the choices)",
     )
-    p.add_argument("--profile", default="default", help="config profile/section name (default: %(default)s)")
-    p.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="path to config file (default: %(default)s)")
-    p.add_argument("--url", help="SMC API url, e.g. https://smc.example.com:8082")
-    p.add_argument("--api-key", help="SMC API key")
-    p.add_argument("--api-version", help="SMC API version override")
-    p.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
-    fmt = p.add_mutually_exclusive_group()
+    pending.add_argument("--profile", default="default", help="config profile/section name (default: %(default)s)")
+    pending.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="path to config file (default: %(default)s)")
+    pending.add_argument("--url", help="SMC API url, e.g. https://smc.example.com:8082")
+    pending.add_argument("--api-key", help="SMC API key")
+    pending.add_argument("--api-version", help="SMC API version override")
+    pending.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
+    fmt = pending.add_mutually_exclusive_group()
     fmt.add_argument("--json", action="store_true", help="emit newline-delimited JSON instead of table text")
     fmt.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
-    p.add_argument("--no-color", action="store_true", help="disable ANSI color output")
-    p.set_defaults(func=run)
+    pending.add_argument("--no-color", action="store_true", help="disable ANSI color output")
+    pending.set_defaults(func=run_pending)
 
-    nested = p.add_subparsers(metavar="", required=False)
+    nested = pending.add_subparsers(metavar="", required=False)
     show.attach(nested)
     return p
 
 
-def _license_row(domain, lic):
+def _change_row(domain, engine_name, record):
     return {
         "domain": domain,
-        "license_id": str(lic.license_id or ""),
-        "type": str(lic.type or ""),
-        "status": str(lic.binding_state or ""),
-        "bound_to": str(lic.bound_to or ""),
-        "expiration_date": str(lic.expiration_date or ""),
-        "maintenance_expires": str(lic.maintenance_contract_expires_date or ""),
+        "engine": engine_name,
+        "changed_on": str(record.changed_on or ""),
+        "event_type": str(record.event_type or ""),
+        "element": str(record.element_name or record.element or ""),
+        "modifier": str(record.modifier or ""),
+        "approved_on": str(record.approved_on or ""),
+        "approver": str(record.approver or ""),
     }
 
 
 def collect(args, config):
-    """Log in, walk the requested domains, and return (rows, errors)."""
+    """Log in, walk the requested domains and their engines, and return
+    (rows, errors)."""
     rows, errors = [], []
 
     session.login(
@@ -94,8 +101,14 @@ def collect(args, config):
         for domain in domains:
             try:
                 session.switch_domain(domain)
-                for lic in System().licenses:
-                    rows.append(_license_row(domain, lic))
+                for engine in Engine.objects.all():
+                    try:
+                        for record in engine.pending_changes:
+                            rows.append(_change_row(domain, engine.name, record))
+                    except UnsupportedEngineFeature:
+                        continue  # engine type predates pending changes (SMC < 6.2)
+                    except SMCException as exc:
+                        errors.append("%s/%s: %s" % (domain, engine.name, exc))
             except SMCException as exc:
                 errors.append("%s: %s" % (domain, exc))
     finally:
@@ -104,17 +117,8 @@ def collect(args, config):
         except Exception:
             pass
 
-    rows.sort(key=lambda r: (r["domain"].lower(), r["type"].lower(), r["license_id"]))
+    rows.sort(key=lambda r: (r["domain"].lower(), r["engine"].lower(), r["changed_on"]))
     return rows, errors
-
-
-def _status_color(row):
-    status = row["status"].lower()
-    if "bound" in status and "unbound" not in status:
-        return None
-    if "unassigned" in status or "unbound" in status:
-        return YELLOW
-    return None
 
 
 def output_csv(rows):
@@ -133,13 +137,12 @@ def output_table(rows, use_color):
     print("-" * len(header_line))
     for row in rows:
         line = "  ".join(row[k].ljust(widths[k]) for k in keys)
-        color = _status_color(row) if use_color else None
-        if color:
-            line = color + line.rstrip() + RESET
+        if use_color and not row["approved_on"]:
+            line = YELLOW + line.rstrip() + RESET
         print(strip_trailing_padding(line))
 
 
-def run(args):
+def run_pending(args):
     try:
         config = load_config(
             profile=args.profile,
@@ -188,6 +191,6 @@ def run(args):
         else:
             output_table(rows, color_enabled(args.no_color))
     elif not errors:
-        print("%s: no licenses found" % PROG, file=sys.stderr)
+        print("%s: no pending changes" % PROG, file=sys.stderr)
 
     return 1 if errors else 0
