@@ -12,6 +12,7 @@ from smc_monitoring.models.constants import LogField
 from smc_monitoring.models.formatters import RawDictFormat, TableFormat
 from smc_monitoring.monitors.logs import LogQuery
 
+from fp import show
 from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from fp.filters import FilterError, apply_filters, build_filters
 from fp.output import color_enabled, colorize, grep_lines, strip_trailing_padding
@@ -57,7 +58,9 @@ def add_parser(sub):
     p.add_argument(
         "--domain",
         help="SMC administrative domain (required - via flag, FP_DOMAIN, or config 'domain ='; "
-             "prevents accidentally mixing logs across customers/domains)",
+             "prevents accidentally mixing logs across customers/domains). "
+             "'all' streams the Shared Domain view, which spans every domain "
+             "your permissions allow; `fp show domains` lists the choices",
     )
     p.add_argument("--api-version", help="SMC API version override")
     p.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
@@ -88,6 +91,9 @@ def add_parser(sub):
         help="max seconds between reconnect attempts in follow mode (default: %(default)s)",
     )
     p.set_defaults(func=run)
+
+    nested = p.add_subparsers(metavar="", required=False)
+    show.attach(nested)
     return p
 
 
@@ -214,6 +220,14 @@ def run(args):
     except ConfigError as exc:
         print("%s: %s" % (PROG, exc), file=sys.stderr)
         return 2
+
+    if config.domain and config.domain.lower() == show.ALL:
+        config.domain = show.SHARED_DOMAIN
+        print(
+            "%s: --domain all -> streaming the %s view, which spans every "
+            "domain your permissions allow" % (PROG, show.SHARED_DOMAIN),
+            file=sys.stderr,
+        )
 
     if config.verify is False:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

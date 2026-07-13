@@ -11,6 +11,7 @@ fp COMMAND [options]
 |---|---|
 | `fp logtail` | `tail(1)`-style live/stored log viewer (the former `fptail`) |
 | `fp license` / `fp licenses` | License inventory — type, status, binding, expiry — per admin domain |
+| `fp show domains` | List the admin domains you can pass to `--domain` (including `all`) |
 
 ## Requirements
 
@@ -179,7 +180,7 @@ fp logtail -f --insecure
 | `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
 | `--url URL` | SMC API URL, e.g. `https://smc.example.com:8082`. |
 | `--api-key KEY` | SMC API key. |
-| `--domain NAME` | SMC Administrative Domain. **Required** (flag, env, or config). |
+| `--domain NAME` | SMC Administrative Domain. **Required** (flag, env, or config). `all` streams the Shared Domain view, which spans every domain your permissions allow. |
 | `--api-version VER` | SMC API version override. |
 | `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
 | `--json` | Emit newline-delimited JSON instead of a colorized table. |
@@ -217,8 +218,9 @@ back to the profile's configured domain and says so). Restrict with `--domain`,
 repeatable:
 
 ```bash
-# All domains
+# All domains (explicitly or by omission)
 fp licenses
+fp license --domain all
 
 # Only two specific domains
 fp license --domain Acme-Corp --domain Widgets-Inc
@@ -233,7 +235,7 @@ Unbound/unassigned licenses are highlighted in yellow in table output.
 
 | Flag | Description |
 |---|---|
-| `--domain NAME` | Limit to this admin domain (repeatable; default: all visible domains). |
+| `--domain NAME` | Limit to this admin domain (repeatable; `all` or omitted = all visible domains). |
 | `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
 | `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
 | `--url URL` | SMC API URL. |
@@ -242,6 +244,36 @@ Unbound/unassigned licenses are highlighted in yellow in table output.
 | `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
 | `--json` | Emit newline-delimited JSON instead of a table. |
 | `--no-color` | Disable ANSI color output (also respects `NO_COLOR`). |
+
+## fp show
+
+Lists the values you can pass to other commands. First (and currently only)
+subcommand: `domains`.
+
+```
+$ fp show domains
+fp show: profile=default url=https://smc.acme.example:8082
+all
+Acme-Corp
+Shared Domain
+Widgets-Inc
+```
+
+The list always starts with the pseudo-domain `all`: `fp license --domain all`
+queries every domain, `fp logtail --domain all` streams the Shared Domain view
+(which spans all domains your permissions allow).
+
+`show` is also reachable from inside the other commands, so you can check the
+choices without leaving the command you're typing:
+
+```bash
+fp show domains
+fp logtail show domains
+fp license show domains
+```
+
+All three are equivalent. `--json` emits the list as a JSON array. Connection
+flags (`--profile`, `--url`, `--api-key`, `--insecure`, ...) work as usual.
 
 ## How it works
 

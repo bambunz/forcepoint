@@ -4,15 +4,16 @@ import warnings
 
 import urllib3
 from smc import session
-from smc.administration.system import AdminDomain, System
+from smc.administration.system import System
 from smc.api.exceptions import SMCException
 
+from fp import show
 from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from fp.output import color_enabled, strip_trailing_padding
 
 PROG = "fp license"
 
-SHARED_DOMAIN = "Shared Domain"
+SHARED_DOMAIN = show.SHARED_DOMAIN
 
 COLUMNS = [
     ("domain", "Domain"),
@@ -42,8 +43,8 @@ def add_parser(sub):
     )
     p.add_argument(
         "--domain", action="append",
-        help="limit to this administrative domain (repeatable; default: all domains "
-             "visible to the API key)",
+        help="limit to this administrative domain (repeatable; 'all' or omitted = "
+             "all domains visible to the API key; `fp show domains` lists the choices)",
     )
     p.add_argument("--profile", default="default", help="config profile/section name (default: %(default)s)")
     p.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="path to config file (default: %(default)s)")
@@ -54,6 +55,9 @@ def add_parser(sub):
     p.add_argument("--json", action="store_true", help="emit newline-delimited JSON instead of table text")
     p.add_argument("--no-color", action="store_true", help="disable ANSI color output")
     p.set_defaults(func=run)
+
+    nested = p.add_subparsers(metavar="", required=False)
+    show.attach(nested)
     return p
 
 
@@ -72,15 +76,16 @@ def _license_row(domain, lic):
 def _domains_to_query(args, config):
     """Return the list of domain names to inspect.
 
-    Explicit --domain flags win. Otherwise enumerate every AdminDomain the
-    API key can see (requires Shared Domain visibility); if that enumeration
-    is not permitted, fall back to the profile's configured domain.
+    Explicit --domain flags win, except that 'all' (alone or mixed in) means
+    enumerate every AdminDomain the API key can see (requires Shared Domain
+    visibility); same when no --domain is given at all. If enumeration is not
+    permitted, fall back to the profile's configured domain.
     """
-    if args.domain:
+    if args.domain and not any(d.lower() == show.ALL for d in args.domain):
         return args.domain
 
     try:
-        names = sorted((d.name for d in AdminDomain.objects.all()), key=str.lower)
+        names = show.enumerate_domains()
         if names:
             return names
     except SMCException as exc:
@@ -102,7 +107,12 @@ def collect(args, config):
     """Log in, walk the requested domains, and return (rows, errors)."""
     rows, errors = [], []
 
-    initial_domain = args.domain[0] if args.domain else (config.domain or SHARED_DOMAIN)
+    explicit = [d for d in (args.domain or []) if d.lower() != show.ALL]
+    if args.domain and not explicit:
+        # only 'all' was given: enumeration needs Shared Domain
+        initial_domain = SHARED_DOMAIN
+    else:
+        initial_domain = explicit[0] if explicit else (config.domain or SHARED_DOMAIN)
     session.login(
         url=config.url,
         api_key=config.api_key,
