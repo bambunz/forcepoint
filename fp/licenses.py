@@ -134,8 +134,32 @@ def collect(args, config):
         except Exception:
             pass
 
+    _resolve_cross_domain(rows)
     rows.sort(key=lambda r: (r["domain"].lower(), r["type"].lower(), r["license_id"]))
     return rows, errors
+
+
+def _is_unknown(bound_to):
+    return "unknown" in bound_to.lower()
+
+
+def _resolve_cross_domain(rows):
+    """Fill <Unknown> bindings with the element name found in another domain.
+
+    The SMC resolves a license's bound element only in that element's home
+    domain; everywhere else the same license shows <Unknown>. Since the
+    license list is management-server-wide, a multi-domain query usually has
+    the real name in the home domain's row - copy it over, annotated with the
+    domain it was resolved in.
+    """
+    known = {}
+    for row in rows:
+        if row["license_id"] and row["bound_to"] and not _is_unknown(row["bound_to"]):
+            known.setdefault(row["license_id"], (row["bound_to"], row["domain"]))
+    for row in rows:
+        if row["bound_to"] and _is_unknown(row["bound_to"]) and row["license_id"] in known:
+            name, domain = known[row["license_id"]]
+            row["bound_to"] = "%s (%s)" % (name, domain)
 
 
 def _status_color(row):
@@ -239,13 +263,14 @@ def run(args):
             output_details(rows, color_enabled(args.no_color))
         else:
             output_table(rows, color_enabled(args.no_color))
-            unknown = sum(1 for r in rows if "unknown" in r["bound_to"].lower())
+            unknown = sum(1 for r in rows if _is_unknown(r["bound_to"]))
             if unknown:
                 print(
-                    "%s: %d license(s) bound to <Unknown> - the bound element is "
-                    "not visible from that domain (bound in another domain, or "
-                    "deleted). Re-run with --details to see the binding serial/POS "
-                    "and other identifying fields." % (PROG, unknown),
+                    "%s: %d license(s) still bound to <Unknown> after cross-domain "
+                    "resolution - the bound element is not visible to this API key "
+                    "in any queried domain (restricted domain, or deleted element). "
+                    "Re-run with --details to see the binding serial/POS and other "
+                    "identifying fields." % (PROG, unknown),
                     file=sys.stderr,
                 )
     elif not errors:

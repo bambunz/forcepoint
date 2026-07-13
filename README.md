@@ -246,12 +246,20 @@ Unbound/unassigned licenses are highlighted in yellow in table output.
 
 `Bound To: <Unknown>` means the SMC could not resolve the bound element *from the
 domain you queried* — typically the license is bound to an engine that lives in a
-different admin domain, or to an element that has since been deleted. The license
-itself is fine; only the name lookup failed in that domain's context. Use
-`--details` to see the identifying fields the SMC still has for it — `binding`
-(the POS/serial it is bound to), `customer_name`, `features`, `granted_date`,
-`proof_of_license` — and match the POS/serial against your engines. The plain
-table prints a reminder to stderr whenever `<Unknown>` bindings are present.
+different admin domain, or to an element that has since been deleted.
+
+`fp license` resolves these across domains automatically: when the same license
+shows a real element name in its home domain, the `<Unknown>` rows are filled in
+as `name (domain)` — e.g. `Fw-Node-1 (Acme-Corp)`. This works whenever the home
+domain is part of the query, which it is by default (`all`).
+
+Licenses still showing `<Unknown>` after that are bound to an element this API
+key cannot see in any queried domain (a domain outside your permissions, or a
+deleted element). Use `--details` to see the identifying fields the SMC still
+has — `binding` (the POS/serial it is bound to), `customer_name`, `features`,
+`granted_date`, `proof_of_license` — and match the POS/serial against your
+engines. The plain table prints a reminder to stderr when unresolved `<Unknown>`
+bindings remain.
 
 ### license flags
 
