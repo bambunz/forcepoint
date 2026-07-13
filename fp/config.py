@@ -16,7 +16,7 @@ class ConfigError(Exception):
 class SMCConfig:
     url: str
     api_key: str
-    domain: str
+    domain: Optional[str] = None
     verify: Union[bool, str] = True
     api_version: Optional[str] = None
     timeout: int = 10
@@ -26,7 +26,7 @@ def _warn_permissions(path):
     mode = stat.S_IMODE(os.stat(path).st_mode)
     if mode & (stat.S_IRWXG | stat.S_IRWXO):
         print(
-            "fptail: warning: %s is readable by group/other and contains an "
+            "fp: warning: %s is readable by group/other and contains an "
             "API key - run `chmod 600 %s`" % (path, path),
             file=sys.stderr,
         )
@@ -40,17 +40,23 @@ def _str_to_verify(value: str) -> Union[bool, str]:
     return value  # path to a CA bundle/cert
 
 
+def _env(name):
+    """FP_* is the current prefix; FPTAIL_* is honored for backward compat."""
+    return os.environ.get("FP_%s" % name, os.environ.get("FPTAIL_%s" % name))
+
+
 def load_config(profile: str = "default", config_path: str = DEFAULT_CONFIG_PATH,
-                 cli_overrides: Optional[dict] = None) -> SMCConfig:
+                 cli_overrides: Optional[dict] = None,
+                 require_domain: bool = True) -> SMCConfig:
     cli_overrides = {k: v for k, v in (cli_overrides or {}).items() if v is not None}
 
     values = {
-        "url": os.environ.get("FPTAIL_URL"),
-        "api_key": os.environ.get("FPTAIL_API_KEY"),
-        "verify": os.environ.get("FPTAIL_VERIFY"),
-        "domain": os.environ.get("FPTAIL_DOMAIN"),
-        "api_version": os.environ.get("FPTAIL_API_VERSION"),
-        "timeout": os.environ.get("FPTAIL_TIMEOUT"),
+        "url": _env("URL"),
+        "api_key": _env("API_KEY"),
+        "verify": _env("VERIFY"),
+        "domain": _env("DOMAIN"),
+        "api_version": _env("API_VERSION"),
+        "timeout": _env("TIMEOUT"),
     }
     values = {k: v for k, v in values.items() if v is not None}
 
@@ -70,13 +76,13 @@ def load_config(profile: str = "default", config_path: str = DEFAULT_CONFIG_PATH
 
     if "url" not in values or "api_key" not in values:
         raise ConfigError(
-            "missing SMC url/api_key - set --url/--api-key, FPTAIL_URL/FPTAIL_API_KEY, "
+            "missing SMC url/api_key - set --url/--api-key, FP_URL/FP_API_KEY, "
             "or create %s (see --help)" % config_path
         )
 
-    if not values.get("domain"):
+    if require_domain and not values.get("domain"):
         raise ConfigError(
-            "no SMC domain set - pass --domain, set FPTAIL_DOMAIN, or add 'domain =' to the "
+            "no SMC domain set - pass --domain, set FP_DOMAIN, or add 'domain =' to the "
             "%s section in %s. This is required to stop logs from different customers/domains "
             "getting mixed up. Pass --domain 'Shared Domain' if that is genuinely what you want."
             % ("[smc]" if profile in ("default", None) else "[smc:%s]" % profile, config_path)
@@ -89,7 +95,7 @@ def load_config(profile: str = "default", config_path: str = DEFAULT_CONFIG_PATH
     return SMCConfig(
         url=values["url"],
         api_key=values["api_key"],
-        domain=values["domain"],
+        domain=values.get("domain"),
         verify=verify,
         api_version=values.get("api_version"),
         timeout=int(values.get("timeout", 10)),

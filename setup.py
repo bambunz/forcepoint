@@ -1,10 +1,10 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="fptail",
-    version="0.1.0",
-    description="tail(1)-style live/stored log viewer for Forcepoint NGFW SMC",
-    packages=find_packages(include=["fptail", "fptail.*"]),
+    name="fp",
+    version="0.2.0",
+    description="Forcepoint NGFW SMC command-line tools: log tailing, license inventory",
+    packages=find_packages(include=["fp", "fp.*"]),
     python_requires=">=3.8",
     install_requires=[
         "fp-NGFW-SMC-python>=1.0.33",
@@ -15,7 +15,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "fptail=fptail.cli:main",
+            "fp=fp.cli:main",
         ],
     },
 )

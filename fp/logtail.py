@@ -1,4 +1,3 @@
-import argparse
 import json
 import re
 import signal
@@ -13,10 +12,11 @@ from smc_monitoring.models.constants import LogField
 from smc_monitoring.models.formatters import RawDictFormat, TableFormat
 from smc_monitoring.monitors.logs import LogQuery
 
-from fptail.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
-from fptail.filters import FilterError, apply_filters, build_filters
-from fptail.output import color_enabled, colorize, grep_lines, strip_trailing_padding
+from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from fp.filters import FilterError, apply_filters, build_filters
+from fp.output import color_enabled, colorize, grep_lines, strip_trailing_padding
 
+PROG = "fp logtail"
 DEFAULT_LINES = 10
 
 # fp-NGFW-SMC-python's SSLAdapter hardcodes urllib3's deprecated ssl_version=
@@ -36,9 +36,10 @@ def _handle_sigint(signum, frame):
     _stop_requested = True
 
 
-def parse_args(argv=None):
-    p = argparse.ArgumentParser(
-        prog="fptail",
+def add_parser(sub):
+    p = sub.add_parser(
+        "logtail",
+        help="tail(1)-style viewer for SMC logs (live or stored)",
         description="tail(1)-style viewer for Forcepoint NGFW SMC logs",
     )
     p.add_argument(
@@ -55,7 +56,7 @@ def parse_args(argv=None):
     p.add_argument("--api-key", help="SMC API key")
     p.add_argument(
         "--domain",
-        help="SMC administrative domain (required - via flag, FPTAIL_DOMAIN, or config 'domain ='; "
+        help="SMC administrative domain (required - via flag, FP_DOMAIN, or config 'domain ='; "
              "prevents accidentally mixing logs across customers/domains)",
     )
     p.add_argument("--api-version", help="SMC API version override")
@@ -86,7 +87,8 @@ def parse_args(argv=None):
         "--max-backoff", type=int, default=30,
         help="max seconds between reconnect attempts in follow mode (default: %(default)s)",
     )
-    return p.parse_args(argv)
+    p.set_defaults(func=run)
+    return p
 
 
 def build_query(args):
@@ -178,7 +180,7 @@ def follow(query, args):
         except Exception as exc:
             if _stop_requested:
                 break
-            print("fptail: stream error (%s), reconnecting in %ss..." % (exc, backoff), file=sys.stderr)
+            print("%s: stream error (%s), reconnecting in %ss..." % (PROG, exc, backoff), file=sys.stderr)
             time.sleep(backoff)
             backoff = min(backoff * 2, args.max_backoff)
 
@@ -194,10 +196,8 @@ def _connection_hint(exc):
     return None
 
 
-def main(argv=None):
+def run(args):
     signal.signal(signal.SIGINT, _handle_sigint)
-
-    args = parse_args(argv)
 
     try:
         config = load_config(
@@ -212,7 +212,7 @@ def main(argv=None):
             },
         )
     except ConfigError as exc:
-        print("fptail: %s" % exc, file=sys.stderr)
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
         return 2
 
     if config.verify is False:
@@ -221,11 +221,11 @@ def main(argv=None):
     try:
         query = build_query(args)
     except FilterError as exc:
-        print("fptail: %s" % exc, file=sys.stderr)
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
         return 2
 
     print(
-        "fptail: profile=%s domain=%s url=%s" % (args.profile, config.domain, config.url),
+        "%s: profile=%s domain=%s url=%s" % (PROG, args.profile, config.domain, config.url),
         file=sys.stderr,
     )
 
@@ -239,13 +239,13 @@ def main(argv=None):
             timeout=config.timeout,
         )
     except SMCException as exc:
-        print("fptail: could not log in to %s: %s" % (config.url, exc), file=sys.stderr)
+        print("%s: could not log in to %s: %s" % (PROG, config.url, exc), file=sys.stderr)
         hint = _connection_hint(exc)
         if hint:
-            print("fptail: %s" % hint, file=sys.stderr)
+            print("%s: %s" % (PROG, hint), file=sys.stderr)
         return 1
     except Exception as exc:
-        print("fptail: unexpected error connecting to %s: %s" % (config.url, exc), file=sys.stderr)
+        print("%s: unexpected error connecting to %s: %s" % (PROG, config.url, exc), file=sys.stderr)
         return 1
 
     try:
@@ -255,13 +255,9 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     except SMCException as exc:
-        print("fptail: SMC error: %s" % exc, file=sys.stderr)
+        print("%s: SMC error: %s" % (PROG, exc), file=sys.stderr)
         return 1
     finally:
         session.logout()
 
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

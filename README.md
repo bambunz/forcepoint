@@ -1,52 +1,31 @@
-# fptail
+# fp
 
-A `tail(1)`-style command-line viewer for [Forcepoint NGFW](https://www.forcepoint.com/product/ngfw-network-security)
-logs, backed by the Security Management Center (SMC) Monitoring API.
-
-Instead of parsing syslog exports or clicking through the Log Viewer in the Management
-Client, `fptail` connects directly to the SMC's real-time log websocket and prints
-records straight to your terminal — the same feed the Management Client uses, but
-scriptable, greppable, and pipeable like any other Unix log tool.
+Command-line tools for [Forcepoint NGFW](https://www.forcepoint.com/product/ngfw-network-security),
+backed by the Security Management Center (SMC) API.
 
 ```
-$ fptail -f --severity high --severity critical
-fptail: profile=default domain=Acme-Corp url=https://smc.acme.example:8082
-Creation Time       Severity  Action  Node Id      Src Addr      Src Port  Dst Addr        Dst Port  Protocol  Event     Information Message
-------------------- --------- ------- ------------ ------------- --------- --------------- --------- --------- --------- -------------------
-2026-07-02 09:14:02 High      Discard 10.0.0.1     203.0.113.44  51422     10.0.0.10        443       TCP       Log       Blocked by rule 12
-2026-07-02 09:14:03 Critical  Block   10.0.0.1     198.51.100.9  33210     10.0.0.20        22        TCP       Log       Brute force pattern
+fp COMMAND [options]
 ```
 
-## Features
-
-- **Real-time tail (`-f`)** of live SMC log records over the same websocket the
-  Management Client uses, with automatic reconnect and backoff if the connection drops.
-- **Historical dump (`-n`)**, just like plain `tail` — shows the last N stored records
-  and exits if you don't pass `-f`.
-- **Server-side filtering** — severity, action, source/destination IP, service, or a raw
-  SMC filter expression copied from the Management Client's "Show Filter Expression".
-  Filtering happens on the SMC side, not by pulling everything and grepping locally.
-- **Mandatory Admin Domain scoping** — every invocation must specify an SMC
-  Administrative Domain. This is deliberate: it stops you from accidentally viewing
-  (or mixing) log data across different customers/tenants in a multi-domain SMC.
-- **Multiple output formats** — colorized human-readable table (default) or
-  newline-delimited JSON (`--json`) for piping into `jq`, a SIEM, or a log pipeline.
-- **Config profiles** — store credentials and domain per customer/environment in a
-  config file and select with `--profile`, instead of retyping flags every time.
+| Command | Purpose |
+|---|---|
+| `fp logtail` | `tail(1)`-style live/stored log viewer (the former `fptail`) |
+| `fp license` / `fp licenses` | License inventory — type, status, binding, expiry — per admin domain |
 
 ## Requirements
 
 - Python 3.8+
 - A Forcepoint NGFW SMC (Security Management Center), version 6.2 or newer, reachable
   over HTTPS from wherever you run this
-- An SMC API Client with an API key and appropriate log-viewing privileges (create one
-  in the Management Client under **Administration > Access Rights > API Client**)
+- An SMC API Client with an API key and appropriate privileges (create one in the
+  Management Client under **Administration > Access Rights > API Client**):
+  log-viewing rights for `logtail`, license/domain visibility for `license`
 
 ## Installation
 
 ```bash
-git clone git@bambunz-github.com:bambunz/fptail.git
-cd fptail
+git clone git@github.com:bambunz/forcepoint.git
+cd forcepoint
 
 python3 -m venv ~/forcepoint
 source ~/forcepoint/bin/activate
@@ -54,27 +33,23 @@ source ~/forcepoint/bin/activate
 pip install -e .
 ```
 
-This installs the `fptail` command into the virtualenv, along with its dependencies:
+This installs the `fp` command into the virtualenv, along with its dependencies:
 [`fp-NGFW-SMC-python`](https://github.com/Forcepoint/fp-NGFW-SMC-python) (the official
 SMC API client), its `fp-NGFW-SMC-python-monitoring` extension (real-time log/event
 monitoring over websocket), and `websocket-client`.
 
 Activate the venv (`source ~/forcepoint/bin/activate`) in any new shell before running
-`fptail`.
+`fp`.
 
 ## Configuration
 
-`fptail` needs four things to connect: the SMC API URL, an API key, the Administrative
-Domain to scope the session to, and (optionally) TLS verification settings. These can
-come from, in order of precedence:
+`fp` needs the SMC API URL, an API key, and (for `logtail`) the Administrative Domain
+to scope the session to. These can come from, in order of precedence:
 
 1. Command-line flags (`--url`, `--api-key`, `--domain`, ...)
-2. Environment variables (`FPTAIL_URL`, `FPTAIL_API_KEY`, `FPTAIL_DOMAIN`, `FPTAIL_VERIFY`,
-   `FPTAIL_DOMAIN`, `FPTAIL_API_VERSION`, `FPTAIL_TIMEOUT`)
+2. Environment variables (`FP_URL`, `FP_API_KEY`, `FP_DOMAIN`, `FP_VERIFY`,
+   `FP_API_VERSION`, `FP_TIMEOUT`; the legacy `FPTAIL_*` names still work)
 3. A config file, default `~/.forcepoint/forcepoint.conf`
-
-The **domain is mandatory** one way or another — `fptail` refuses to start without one,
-to prevent accidentally reading Shared Domain (or the wrong customer's) logs.
 
 ### Config file
 
@@ -95,7 +70,7 @@ chmod 700 ~/.forcepoint
 chmod 600 ~/.forcepoint/forcepoint.conf
 ```
 
-`fptail` warns on startup if the file is group/other-readable.
+`fp` warns on startup if the file is group/other-readable.
 
 ### Multiple environments / customers
 
@@ -117,55 +92,84 @@ domain = Widgets-Inc
 Select one with `--profile`:
 
 ```bash
-fptail --profile acme -f
-fptail --profile widgets-inc -n 50
+fp logtail --profile acme -f
+fp license --profile widgets-inc
 ```
 
-`fptail` prints the active profile, domain, and URL at startup so it's always obvious
-which environment/customer you're looking at.
+`fp` prints the active profile and URL at startup so it's always obvious which
+environment/customer you're looking at.
 
-## Usage
+## fp logtail
+
+A `tail(1)`-style viewer for NGFW logs. Instead of parsing syslog exports or clicking
+through the Log Viewer in the Management Client, `fp logtail` connects directly to the
+SMC's real-time log websocket and prints records straight to your terminal — the same
+feed the Management Client uses, but scriptable, greppable, and pipeable.
+
+```
+$ fp logtail -f --severity high --severity critical
+fp logtail: profile=default domain=Acme-Corp url=https://smc.acme.example:8082
+Creation Time       Severity  Action  Node Id      Src Addr      Src Port  Dst Addr        Dst Port  Protocol  Event     Information Message
+------------------- --------- ------- ------------ ------------- --------- --------------- --------- --------- --------- -------------------
+2026-07-02 09:14:02 High      Discard 10.0.0.1     203.0.113.44  51422     10.0.0.10        443       TCP       Log       Blocked by rule 12
+2026-07-02 09:14:03 Critical  Block   10.0.0.1     198.51.100.9  33210     10.0.0.20        22        TCP       Log       Brute force pattern
+```
+
+Features:
+
+- **Real-time tail (`-f`)** over the same websocket the Management Client uses, with
+  automatic reconnect and backoff if the connection drops.
+- **Historical dump (`-n`)**, just like plain `tail` — shows the last N stored records
+  and exits if you don't pass `-f`.
+- **Server-side filtering** — severity, action, source/destination IP, service, or a raw
+  SMC filter expression copied from the Management Client's "Show Filter Expression".
+- **Mandatory Admin Domain scoping** — `logtail` refuses to start without a domain, to
+  stop you from accidentally viewing (or mixing) log data across customers/tenants.
+- **Multiple output formats** — colorized table (default) or newline-delimited JSON
+  (`--json`) for piping into `jq`, a SIEM, or a log pipeline.
+
+### Examples
 
 ```bash
 # Show the last 10 stored log records and exit (like plain `tail`)
-fptail
+fp logtail
 
 # Follow new records in real time (like `tail -f`), after an initial dump of 50
-fptail -n 50 -f
+fp logtail -n 50 -f
 
 # Follow only, skip the historical dump
-fptail -n 0 -f
+fp logtail -n 0 -f
 
 # Only high/critical severity events
-fptail -f --severity high --severity critical
+fp logtail -f --severity high --severity critical
 
 # Only traffic to/from a specific host
-fptail -f --src 203.0.113.44 --dst 10.0.0.20
+fp logtail -f --src 203.0.113.44 --dst 10.0.0.20
 
 # Only a specific service, blocked traffic
-fptail -f --service TCP/443 --action block
+fp logtail -f --service TCP/443 --action block
 
 # Raw SMC filter expression (copy from Management Client: Logs view ->
 # right-click a filter -> "Show Filter Expression")
-fptail -f --expr '$Dport == 22 OR $Dport == 3389'
+fp logtail -f --expr '$Dport == 22 OR $Dport == 3389'
 
 # Custom columns
-fptail -f --fields TIMESTAMP,SRC,DST,ACTION,IPSAPPID
+fp logtail -f --fields TIMESTAMP,SRC,DST,ACTION,IPSAPPID
 
 # JSON output, piped into jq
-fptail -f --json | jq -c 'select(.Action == "Discard")'
+fp logtail -f --json | jq -c 'select(.Action == "Discard")'
 
 # Client-side regex on top of server-side filters, no color, useful in scripts/cron
-fptail -n 200 --grep 'TLS' --no-color
+fp logtail -n 200 --grep 'TLS' --no-color
 
 # Point at a specific SMC without a config file at all
-fptail -f --url https://smc.example.com:8082 --api-key "$FPTAIL_API_KEY" --domain Acme-Corp
+fp logtail -f --url https://smc.example.com:8082 --api-key "$FP_API_KEY" --domain Acme-Corp
 
 # Self-signed SMC certificate
-fptail -f --insecure
+fp logtail -f --insecure
 ```
 
-## CLI reference
+### logtail flags
 
 | Flag | Description |
 |---|---|
@@ -192,32 +196,81 @@ fptail -f --insecure
 | `--no-color` | Disable ANSI color output (also respects `NO_COLOR`). |
 | `--max-backoff SECONDS` | Max seconds between reconnect attempts in follow mode (default: 30). |
 
+## fp license
+
+License inventory across administrative domains. `license` and `licenses` are
+interchangeable.
+
+```
+$ fp license
+fp license: profile=default url=https://smc.acme.example:8082 domains=all
+Domain        License Id  Type     Status  Bound To                     Expires     Maintenance Expires
+--------------------------------------------------------------------------------------------------------
+Acme-Corp     1000001     SECNODE  Bound   Fw-Node-1                    2027-01-31  2026-12-31
+Acme-Corp     1000002     SECNODE  Bound   Fw-Node-2                    2027-01-31  2026-12-31
+Widgets-Inc   1000010     Mgmt     Bound   Management Server            2027-06-30  2027-06-30
+```
+
+By default all administrative domains visible to the API key are queried (this
+requires Shared Domain visibility; if the key can't enumerate domains, `fp` falls
+back to the profile's configured domain and says so). Restrict with `--domain`,
+repeatable:
+
+```bash
+# All domains
+fp licenses
+
+# Only two specific domains
+fp license --domain Acme-Corp --domain Widgets-Inc
+
+# JSON for scripting
+fp license --json | jq -r 'select(.status != "Bound") | .license_id'
+```
+
+Unbound/unassigned licenses are highlighted in yellow in table output.
+
+### license flags
+
+| Flag | Description |
+|---|---|
+| `--domain NAME` | Limit to this admin domain (repeatable; default: all visible domains). |
+| `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
+| `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
+| `--url URL` | SMC API URL. |
+| `--api-key KEY` | SMC API key. |
+| `--api-version VER` | SMC API version override. |
+| `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
+| `--json` | Emit newline-delimited JSON instead of a table. |
+| `--no-color` | Disable ANSI color output (also respects `NO_COLOR`). |
+
 ## How it works
 
-`fptail` uses [`smc-python`](https://github.com/Forcepoint/fp-NGFW-SMC-python) to log in
-to the SMC API and its `smc_monitoring` extension to open a `LogQuery` against
-`/monitoring/log/socket` — the same websocket endpoint the Management Client's Logs view
-uses. Filters (severity, action, IPs, service, ...) are compiled into the SMC's native
-query filter format and evaluated server-side, so only matching records cross the wire.
-Historical (`stored`) queries return a bounded batch and terminate; live (`current`)
-queries stream indefinitely, and `fptail` transparently reconnects with exponential
-backoff if the socket drops.
+`fp` uses [`smc-python`](https://github.com/Forcepoint/fp-NGFW-SMC-python) to log in to
+the SMC API. `logtail` opens a `LogQuery` against `/monitoring/log/socket` — the same
+websocket endpoint the Management Client's Logs view uses — with filters compiled into
+the SMC's native query filter format and evaluated server-side. `license` walks the
+requested admin domains with `session.switch_domain()` and reads each domain's
+`system/licenses` resource.
 
 ## Known limitations
 
-- Long-running `-f` sessions reuse the SMC session established at startup. If that
-  session itself expires (per your SMC's session timeout policy), the reconnect logic
-  will keep retrying but won't re-authenticate — restart `fptail` if that happens.
-- Filtering by engine currently matches on the sending engine's IP (`Node Id`), not by
-  engine element name.
+- Long-running `logtail -f` sessions reuse the SMC session established at startup. If
+  that session itself expires (per your SMC's session timeout policy), the reconnect
+  logic will keep retrying but won't re-authenticate — restart `fp logtail` if that
+  happens.
+- `logtail` filtering by engine currently matches on the sending engine's IP
+  (`Node Id`), not by engine element name.
+- SMC licenses live in the Shared Domain; depending on SMC version the per-domain
+  license view may repeat management-server-wide licenses in each domain rather than
+  showing only that domain's bindings.
 
 ## Security notes
 
 - The config file holds a live API key — keep it at `chmod 600`, per-user only.
-  `fptail` will warn (not refuse) if it isn't.
-- `--domain` is mandatory by design to prevent cross-tenant log exposure in multi-domain
-  SMC deployments. Use `--domain 'Shared Domain'` explicitly if that's genuinely what
-  you want.
+  `fp` will warn (not refuse) if it isn't.
+- `logtail --domain` is mandatory by design to prevent cross-tenant log exposure in
+  multi-domain SMC deployments. Use `--domain 'Shared Domain'` explicitly if that's
+  genuinely what you want.
 - `--insecure` disables TLS certificate validation entirely. Use it only against SMCs
   with self-signed certificates you already trust out-of-band (e.g. isolated lab/test
   environments), never over an untrusted network.
