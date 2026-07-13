@@ -231,9 +231,27 @@ fp license --json | jq -r 'select(.status != "Bound") | .license_id'
 
 # CSV export (header included), e.g. straight into a spreadsheet
 fp license --csv > licenses.csv
+
+# Everything the SMC knows about each license, as per-license blocks
+fp license --details
+
+# Full detail fields also flow into --json / --csv
+fp license --details --csv > licenses-full.csv
+fp license --details --json | jq 'select(.bound_to == "<Unknown>")'
 ```
 
 Unbound/unassigned licenses are highlighted in yellow in table output.
+
+### Licenses bound to `<Unknown>`
+
+`Bound To: <Unknown>` means the SMC could not resolve the bound element *from the
+domain you queried* — typically the license is bound to an engine that lives in a
+different admin domain, or to an element that has since been deleted. The license
+itself is fine; only the name lookup failed in that domain's context. Use
+`--details` to see the identifying fields the SMC still has for it — `binding`
+(the POS/serial it is bound to), `customer_name`, `features`, `granted_date`,
+`proof_of_license` — and match the POS/serial against your engines. The plain
+table prints a reminder to stderr whenever `<Unknown>` bindings are present.
 
 ### license flags
 
@@ -246,6 +264,7 @@ Unbound/unassigned licenses are highlighted in yellow in table output.
 | `--api-key KEY` | SMC API key. |
 | `--api-version VER` | SMC API version override. |
 | `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
+| `-d, --details` | Show every field the SMC returns per license (binding serial/POS, features, customer name, ...). Table mode switches to per-license blocks; `--json`/`--csv` gain the extra fields. |
 | `--json` | Emit newline-delimited JSON instead of a table (mutually exclusive with `--csv`). |
 | `--csv` | Emit CSV with a header row instead of a table. |
 | `--no-color` | Disable ANSI color output (also respects `NO_COLOR`). |

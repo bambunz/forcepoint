@@ -53,6 +53,12 @@ def add_parser(sub):
     p.add_argument("--api-key", help="SMC API key")
     p.add_argument("--api-version", help="SMC API version override")
     p.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
+    p.add_argument(
+        "-d", "--details", action="store_true",
+        help="show every field the SMC returns per license (binding serial/POS, "
+             "features, customer name, ...) - useful to identify licenses whose "
+             "binding shows as <Unknown>",
+    )
     fmt = p.add_mutually_exclusive_group()
     fmt.add_argument("--json", action="store_true", help="emit newline-delimited JSON instead of table text")
     fmt.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
@@ -64,8 +70,25 @@ def add_parser(sub):
     return p
 
 
-def _license_row(domain, lic):
-    return {
+# raw License attributes already represented by the standard columns
+_MAPPED_ATTRS = {
+    "license_id", "type", "binding_state", "bound_to",
+    "expiration_date", "maintenance_contract_expires_date",
+}
+
+
+def _flatten(value):
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_flatten(v) for v in value)
+    if isinstance(value, dict):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+def _license_row(domain, lic, details=False):
+    row = {
         "domain": domain,
         "license_id": str(lic.license_id or ""),
         "type": str(lic.type or ""),
@@ -74,6 +97,13 @@ def _license_row(domain, lic):
         "expiration_date": str(lic.expiration_date or ""),
         "maintenance_expires": str(lic.maintenance_contract_expires_date or ""),
     }
+    if details:
+        # everything else the SMC returned for this license, verbatim
+        for key in sorted(vars(lic)):
+            if key in _MAPPED_ATTRS or key.startswith("_"):
+                continue
+            row[key] = _flatten(vars(lic)[key])
+    return row
 
 
 def collect(args, config):
@@ -95,7 +125,7 @@ def collect(args, config):
             try:
                 session.switch_domain(domain)
                 for lic in System().licenses:
-                    rows.append(_license_row(domain, lic))
+                    rows.append(_license_row(domain, lic, details=args.details))
             except SMCException as exc:
                 errors.append("%s: %s" % (domain, exc))
     finally:
@@ -117,10 +147,30 @@ def _status_color(row):
     return None
 
 
+def _all_fieldnames(rows):
+    """Standard columns first, then every extra detail field seen in any row."""
+    names = [k for k, _ in COLUMNS]
+    extras = sorted({k for r in rows for k in r} - set(names))
+    return names + extras
+
+
 def output_csv(rows):
-    writer = csv.DictWriter(sys.stdout, fieldnames=[k for k, _ in COLUMNS])
+    writer = csv.DictWriter(sys.stdout, fieldnames=_all_fieldnames(rows), restval="")
     writer.writeheader()
     writer.writerows(rows)
+
+
+def output_details(rows, use_color):
+    for i, row in enumerate(rows):
+        if i:
+            print()
+        title = "%s / %s (%s)" % (row["domain"], row["license_id"], row["type"])
+        color = _status_color(row) if use_color else None
+        print((color + title + RESET) if color else title)
+        print("-" * len(title))
+        width = max(len(k) for k in row)
+        for key, value in row.items():
+            print("  %-*s  %s" % (width + 1, key + ":", value))
 
 
 def output_table(rows, use_color):
@@ -185,8 +235,19 @@ def run(args):
                 print(json.dumps(row, separators=(",", ":")))
         elif args.csv:
             output_csv(rows)
+        elif args.details:
+            output_details(rows, color_enabled(args.no_color))
         else:
             output_table(rows, color_enabled(args.no_color))
+            unknown = sum(1 for r in rows if "unknown" in r["bound_to"].lower())
+            if unknown:
+                print(
+                    "%s: %d license(s) bound to <Unknown> - the bound element is "
+                    "not visible from that domain (bound in another domain, or "
+                    "deleted). Re-run with --details to see the binding serial/POS "
+                    "and other identifying fields." % (PROG, unknown),
+                    file=sys.stderr,
+                )
     elif not errors:
         print("%s: no licenses found" % PROG, file=sys.stderr)
 
