@@ -206,11 +206,11 @@ interchangeable.
 ```
 $ fp license
 fp license: profile=default url=https://smc.acme.example:8082 domains=all
-Domain        License Id  Type     Status  Bound To                     Expires     Maintenance Expires
---------------------------------------------------------------------------------------------------------
-Acme-Corp     1000001     SECNODE  Bound   Fw-Node-1                    2027-01-31  2026-12-31
-Acme-Corp     1000002     SECNODE  Bound   Fw-Node-2                    2027-01-31  2026-12-31
-Widgets-Inc   1000010     Mgmt     Bound   Management Server            2027-06-30  2027-06-30
+Domain        Customer     License Id  Type     Status  Bound To           Expires     Maintenance Expires
+------------------------------------------------------------------------------------------------------------
+Acme-Corp     Acme Corp    1000001     SECNODE  Bound   Fw-Node-1          2027-01-31  2026-12-31
+Acme-Corp     Acme Corp    1000002     SECNODE  Bound   Fw-Node-2          2027-01-31  2026-12-31
+Widgets-Inc   Widgets Inc  1000010     Mgmt     Bound   Management Server  2027-06-30  2027-06-30
 ```
 
 By default all administrative domains visible to the API key are queried (this
@@ -260,6 +260,59 @@ has — `binding` (the POS/serial it is bound to), `customer_name`, `features`,
 `granted_date`, `proof_of_license` — and match the POS/serial against your
 engines. The plain table prints a reminder to stderr when unresolved `<Unknown>`
 bindings remain.
+
+### fp license cron — expiry alerting by email
+
+`fp license cron` checks every license's expiration date and, when any expire
+within N days (default 30, already-expired always included), emails a table like
+the normal license output plus a **Days Left** column. When nothing is close to
+expiry it sends nothing and exits 0 — safe to run unattended.
+
+SMTP settings live in an `[smtp]` section of the same config file:
+
+```ini
+[smtp]
+host = mail.example.com
+port = 587
+starttls = true
+username = fp-alerts
+password = secret
+from = fp-alerts@example.com
+to = noc@example.com, ale@example.com
+```
+
+Every key can be overridden with a flag (`--smtp-host`, `--smtp-port`,
+`--smtp-user`, `--smtp-password`, `--starttls`, `--from`, `--to`). Port 465
+implies implicit TLS. The email is multipart: aligned-text table plus an HTML
+table.
+
+```bash
+# Preview what would be sent, without sending
+fp license cron --dry-run
+
+# Different threshold, one customer only
+fp license cron --days 60 --domain Acme-Corp
+
+# Crontab: every Monday 08:00, using the forcepoint venv
+0 8 * * 1 /home/ale/forcepoint/bin/fp license cron
+```
+
+Rows are sorted most-urgent first (expired, then fewest days left). Licenses
+with no expiration date (perpetual) are skipped; unparsable dates are reported
+to stderr. Exit code is non-zero on SMC/SMTP errors, so cron's own mail catches
+failures.
+
+#### cron flags
+
+| Flag | Description |
+|---|---|
+| `--days N` | Alert threshold in days (default: 30). |
+| `--domain NAME` | Limit to this admin domain (repeatable; `all` or omitted = all visible domains). |
+| `--to ADDR` | Recipient (repeatable; overrides config `to =`). |
+| `--from ADDR` | Sender (overrides config `from =`). |
+| `--smtp-host / --smtp-port / --smtp-user / --smtp-password / --starttls` | SMTP overrides. |
+| `--dry-run` | Print the email to stdout instead of sending. |
+| `--profile / --config / --url / --api-key / --api-version / --insecure` | As in `fp license`. |
 
 ### license flags
 

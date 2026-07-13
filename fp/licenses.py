@@ -1,7 +1,11 @@
 import csv
+import html
 import json
+import smtplib
 import sys
 import warnings
+from datetime import date, datetime, timezone
+from email.message import EmailMessage
 
 import urllib3
 from smc import session
@@ -9,8 +13,8 @@ from smc.administration.system import System
 from smc.api.exceptions import SMCException
 
 from fp import show
-from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
-from fp.output import color_enabled, strip_trailing_padding
+from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config, load_smtp_config
+from fp.output import color_enabled
 
 PROG = "fp license"
 
@@ -18,6 +22,7 @@ SHARED_DOMAIN = show.SHARED_DOMAIN
 
 COLUMNS = [
     ("domain", "Domain"),
+    ("customer", "Customer"),
     ("license_id", "License Id"),
     ("type", "Type"),
     ("status", "Status"),
@@ -25,6 +30,8 @@ COLUMNS = [
     ("expiration_date", "Expires"),
     ("maintenance_expires", "Maintenance Expires"),
 ]
+
+CRON_COLUMNS = COLUMNS + [("days_left", "Days Left")]
 
 RESET = "\x1b[0m"
 RED = "\x1b[31m"
@@ -67,12 +74,53 @@ def add_parser(sub):
 
     nested = p.add_subparsers(metavar="", required=False)
     show.attach(nested)
+    _add_cron_parser(nested)
     return p
+
+
+def _add_cron_parser(nested):
+    c = nested.add_parser(
+        "cron",
+        help="email a report of licenses expiring within N days (for crontab)",
+        description="Check license expiration dates and email a table (like the "
+                    "normal license output) of those expiring within N days. "
+                    "Sends nothing when no license is close to expiry. SMTP "
+                    "settings come from the [smtp] section of the config file, "
+                    "overridable with flags.",
+    )
+    c.add_argument(
+        "--days", type=int, default=30,
+        help="alert threshold in days (default: %(default)s; already-expired "
+             "licenses are always included)",
+    )
+    c.add_argument(
+        "--domain", action="append",
+        help="limit to this administrative domain (repeatable; 'all' or omitted = "
+             "all domains visible to the API key)",
+    )
+    c.add_argument("--profile", default="default", help="config profile/section name (default: %(default)s)")
+    c.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="path to config file (default: %(default)s)")
+    c.add_argument("--url", help="SMC API url, e.g. https://smc.example.com:8082")
+    c.add_argument("--api-key", help="SMC API key")
+    c.add_argument("--api-version", help="SMC API version override")
+    c.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
+    c.add_argument("--to", action="append", help="recipient address (repeatable; overrides config 'to =')")
+    c.add_argument("--from", dest="sender", help="sender address (overrides config 'from =')")
+    c.add_argument("--smtp-host", help="SMTP server (overrides config 'host =')")
+    c.add_argument("--smtp-port", type=int, help="SMTP port (overrides config 'port ='; 465 implies TLS)")
+    c.add_argument("--smtp-user", help="SMTP username (overrides config 'username =')")
+    c.add_argument("--smtp-password", help="SMTP password (overrides config 'password =')")
+    c.add_argument("--starttls", action="store_true", default=None,
+                   help="use STARTTLS (overrides config 'starttls =')")
+    c.add_argument("--dry-run", action="store_true",
+                   help="print the email to stdout instead of sending it")
+    c.set_defaults(func=run_cron, details=False)
+    return c
 
 
 # raw License attributes already represented by the standard columns
 _MAPPED_ATTRS = {
-    "license_id", "type", "binding_state", "bound_to",
+    "license_id", "type", "binding_state", "bound_to", "customer_name",
     "expiration_date", "maintenance_contract_expires_date",
 }
 
@@ -90,6 +138,7 @@ def _flatten(value):
 def _license_row(domain, lic, details=False):
     row = {
         "domain": domain,
+        "customer": str(lic.customer_name or ""),
         "license_id": str(lic.license_id or ""),
         "type": str(lic.type or ""),
         "status": str(lic.binding_state or ""),
@@ -197,20 +246,189 @@ def output_details(rows, use_color):
             print("  %-*s  %s" % (width + 1, key + ":", value))
 
 
-def output_table(rows, use_color):
-    keys = [k for k, _ in COLUMNS]
-    headers = {k: h for k, h in COLUMNS}
-    widths = {k: max(len(headers[k]), *(len(r[k]) for r in rows)) for k in keys}
+def table_lines(rows, columns):
+    """Render rows as aligned text lines: header, separator, one line per row."""
+    keys = [k for k, _ in columns]
+    headers = {k: h for k, h in columns}
+    widths = {k: max(len(headers[k]), *(len(r.get(k, "")) for r in rows)) for k in keys}
 
     header_line = "  ".join(headers[k].ljust(widths[k]) for k in keys)
-    print(header_line)
-    print("-" * len(header_line))
+    lines = [header_line, "-" * len(header_line)]
     for row in rows:
-        line = "  ".join(row[k].ljust(widths[k]) for k in keys)
+        line = "  ".join(row.get(k, "").ljust(widths[k]) for k in keys)
+        lines.append(line.rstrip())
+    return lines
+
+
+def output_table(rows, use_color):
+    lines = table_lines(rows, COLUMNS)
+    print(lines[0])
+    print(lines[1])
+    for row, line in zip(rows, lines[2:]):
         color = _status_color(row) if use_color else None
-        if color:
-            line = color + line.rstrip() + RESET
-        print(strip_trailing_padding(line))
+        print((color + line + RESET) if color else line)
+
+
+def _days_left(datestr, today):
+    """Parse an SMC expiration date and return days until expiry, or None if
+    the value is empty/unparsable (e.g. perpetual licenses)."""
+    s = (datestr or "").strip()
+    if not s:
+        return None
+    if s.isdigit() and len(s) >= 12:  # epoch milliseconds
+        d = datetime.fromtimestamp(int(s) / 1000, tz=timezone.utc).date()
+        return (d - today).days
+    try:
+        d = datetime.strptime(s[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    return (d - today).days
+
+
+def expiring_rows(rows, days, today=None):
+    """Annotate rows with days_left and return those expiring within `days`
+    (including already expired), plus the count of unparsable dates."""
+    today = today or date.today()
+    hits, unparsable = [], 0
+    for row in rows:
+        left = _days_left(row["expiration_date"], today)
+        if left is None:
+            if row["expiration_date"].strip():
+                unparsable += 1
+            continue
+        if left <= days:
+            row = dict(row)
+            row["days_left"] = "EXPIRED (%d)" % left if left < 0 else str(left)
+            hits.append(row)
+    hits.sort(key=lambda r: (int(r["days_left"].split("(")[-1].rstrip(")"))
+                             if r["days_left"].startswith("EXPIRED") else int(r["days_left"])))
+    return hits, unparsable
+
+
+def build_email(smtp_cfg, hits, days, url):
+    subject = "[fp] %d Forcepoint license(s) expiring within %d days" % (len(hits), days)
+    intro = (
+        "The following Forcepoint licenses on %s expire within %d days "
+        "(or are already expired):" % (url, days)
+    )
+    lines = table_lines(hits, CRON_COLUMNS)
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = smtp_cfg.sender
+    msg["To"] = ", ".join(smtp_cfg.to)
+    msg.set_content(intro + "\n\n" + "\n".join(lines) + "\n\n-- \nfp license cron\n")
+
+    cells = "".join(
+        "<tr>%s</tr>" % "".join("<td>%s</td>" % html.escape(r.get(k, "")) for k, _ in CRON_COLUMNS)
+        for r in hits
+    )
+    header = "".join("<th align=\"left\">%s</th>" % html.escape(h) for _, h in CRON_COLUMNS)
+    msg.add_alternative(
+        "<p>%s</p><table border=\"1\" cellpadding=\"4\" cellspacing=\"0\">"
+        "<tr>%s</tr>%s</table><p>-- <br>fp license cron</p>"
+        % (html.escape(intro), header, cells),
+        subtype="html",
+    )
+    return msg
+
+
+def send_email(smtp_cfg, msg):
+    if smtp_cfg.port == 465:
+        server = smtplib.SMTP_SSL(smtp_cfg.host, smtp_cfg.port, timeout=30)
+    else:
+        server = smtplib.SMTP(smtp_cfg.host, smtp_cfg.port, timeout=30)
+    try:
+        if smtp_cfg.starttls and smtp_cfg.port != 465:
+            server.starttls()
+        if smtp_cfg.username:
+            server.login(smtp_cfg.username, smtp_cfg.password or "")
+        server.send_message(msg)
+    finally:
+        server.quit()
+
+
+def run_cron(args):
+    try:
+        config = load_config(
+            profile=args.profile,
+            config_path=args.config,
+            cli_overrides={
+                "url": args.url,
+                "api_key": args.api_key,
+                "api_version": args.api_version,
+                "verify": False if args.insecure else None,
+            },
+            require_domain=False,
+        )
+        smtp_cfg = load_smtp_config(
+            config_path=args.config,
+            cli_overrides={
+                "host": args.smtp_host,
+                "port": args.smtp_port,
+                "username": args.smtp_user,
+                "password": args.smtp_password,
+                "starttls": args.starttls,
+                "from": args.sender,
+                "to": args.to,
+            },
+        )
+    except ConfigError as exc:
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
+        return 2
+
+    if config.verify is False:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    try:
+        rows, errors = collect(args, config)
+    except ConfigError as exc:
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
+        return 2
+    except SMCException as exc:
+        print("%s: could not log in to %s: %s" % (PROG, config.url, exc), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+    for err in errors:
+        print("%s: error: %s" % (PROG, err), file=sys.stderr)
+
+    hits, unparsable = expiring_rows(rows, args.days)
+    if unparsable:
+        print(
+            "%s: warning: %d license(s) have unparsable expiration dates and "
+            "were not checked" % (PROG, unparsable),
+            file=sys.stderr,
+        )
+
+    if not hits:
+        print(
+            "%s: %d license(s) checked, none expiring within %d days - no email sent"
+            % (PROG, len(rows), args.days),
+            file=sys.stderr,
+        )
+        return 1 if errors else 0
+
+    msg = build_email(smtp_cfg, hits, args.days, config.url)
+
+    if args.dry_run:
+        print(msg)
+        return 1 if errors else 0
+
+    try:
+        send_email(smtp_cfg, msg)
+    except (smtplib.SMTPException, OSError) as exc:
+        print("%s: sending mail via %s:%s failed: %s"
+              % (PROG, smtp_cfg.host, smtp_cfg.port, exc), file=sys.stderr)
+        return 1
+
+    print(
+        "%s: emailed %d expiring license(s) to %s"
+        % (PROG, len(hits), ", ".join(smtp_cfg.to)),
+        file=sys.stderr,
+    )
+    return 1 if errors else 0
 
 
 def run(args):

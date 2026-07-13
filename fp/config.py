@@ -3,7 +3,7 @@ import os
 import stat
 import sys
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/.forcepoint/forcepoint.conf")
 
@@ -20,6 +20,60 @@ class SMCConfig:
     verify: Union[bool, str] = True
     api_version: Optional[str] = None
     timeout: int = 10
+
+
+@dataclass
+class SMTPConfig:
+    host: str
+    sender: str
+    to: List[str]
+    port: int = 25
+    starttls: bool = False
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+def load_smtp_config(config_path: str = DEFAULT_CONFIG_PATH,
+                     cli_overrides: Optional[dict] = None) -> SMTPConfig:
+    """Read the [smtp] section of the config file, with CLI overrides on top."""
+    cli_overrides = {k: v for k, v in (cli_overrides or {}).items() if v is not None}
+
+    values = {}
+    if os.path.isfile(config_path):
+        parser = configparser.ConfigParser()
+        parser.read(config_path)
+        if "smtp" in parser:
+            for key in ("host", "port", "starttls", "username", "password", "from", "to"):
+                if key in parser["smtp"]:
+                    values[key] = parser["smtp"][key]
+
+    values.update(cli_overrides)
+
+    missing = [k for k in ("host", "from", "to") if not values.get(k)]
+    if missing:
+        raise ConfigError(
+            "missing SMTP settings: %s - add them to an [smtp] section in %s "
+            "(keys: host, port, starttls, username, password, from, to) or "
+            "pass the corresponding flags" % (", ".join(missing), config_path)
+        )
+
+    to = values["to"]
+    if isinstance(to, str):
+        to = [addr.strip() for addr in to.split(",") if addr.strip()]
+
+    starttls = values.get("starttls", False)
+    if isinstance(starttls, str):
+        starttls = starttls.lower() in ("true", "yes", "1")
+
+    return SMTPConfig(
+        host=values["host"],
+        sender=values["from"],
+        to=to,
+        port=int(values.get("port", 25)),
+        starttls=starttls,
+        username=values.get("username"),
+        password=values.get("password"),
+    )
 
 
 def _warn_permissions(path):
