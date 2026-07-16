@@ -429,31 +429,32 @@ flags (`--profile`, `--url`, `--api-key`, `--insecure`, ...) work as usual.
 
 ### fp show metrics
 
-One row per firewall node: Domain, Node, then one column per appliance metric
-the SMC reports for that node — filesystem usage/size, logging subsystem,
-sandbox, anti-malware, MLC connection, and whatever else your SMC version and
-appliance features expose. Columns are built dynamically from the data, so
-newer SMC versions with richer per-node statistics show more columns without
-any change to `fp`.
+One row per firewall node: Domain, Node, then the utilization metrics. By
+default only CPU/load/memory/usage-style columns are shown (matched by name,
+so whatever utilization values your SMC version reports appear automatically);
+`--details` switches to the full set — every appliance metric (anti-malware
+database, filesystem sizes, logging subsystem, GTI/MLC connection, ...) plus
+the node status attributes (status, state, version, dyn_up, installed
+policy, ...).
 
 ```
 $ fp show metrics
 fp show: profile=default url=https://smc.acme.example:8082 domains=Acme-Corp
-Domain     Node         File Systems Data Usage  File Systems Spool Usage  Logging subsystem Log rate entries/s  ...
----------------------------------------------------------------------------------------------------------------------
-Acme-Corp  fw-1 node 1  6.3%                     4.9%                      12
-Acme-Corp  fw-1 node 2  7.1%                     5.2%                      9
+Domain     Node         File Systems Data Usage  File Systems Spool Usage  File Systems Tmp Usage  File Systems Swap Usage
+---------------------------------------------------------------------------------------------------------------------------
+Acme-Corp  fw-1 node 1  11.6%                    2.8%                      0.1%                    28.6%
+Acme-Corp  fw-1 node 2  12.9%                    2.9%                      0.1%                    28.7%
 ```
 
 ```bash
-# Profile domain (default), table
+# Profile domain (default), compact utilization table
 fp show metrics
 
-# All domains, plus node status attributes (state, version, policy, ...)
+# All domains, every metric + node status attributes
 fp show metrics --domain all --details
 
 # CSV / JSON for monitoring pipelines
-fp show metrics --csv > metrics.csv
+fp show metrics --details --csv > metrics.csv
 fp show metrics --json | jq 'select(.["File Systems Spool Usage"] // "0" | rtrimstr("%") | tonumber > 80)'
 ```
 
@@ -473,7 +474,7 @@ unsupported) are listed with empty metric cells and the error goes to stderr.
 | Flag | Description |
 |---|---|
 | `--domain NAME` | Domain(s) to query: repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
-| `-d, --details` | Also include node status attributes (status, state, version, dyn_up, platform, configuration status, installed policy, ...). |
+| `-d, --details` | Show every appliance metric plus node status attributes, instead of only the utilization columns. |
 | `--json` | Newline-delimited JSON, one object per node. |
 | `--csv` | CSV with header row. |
 | `--profile / --config / --url / --api-key / --api-version / --insecure` | As in the other commands. |

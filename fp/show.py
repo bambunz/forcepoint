@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 import sys
 import warnings
 
@@ -56,11 +57,11 @@ def attach(sub):
 
     m = ssub.add_parser(
         "metrics",
-        help="per-node appliance metrics, one row per firewall node",
-        description="Show one row per firewall node with every appliance metric "
-                    "the SMC reports (filesystem usage, logging subsystem, "
-                    "sandbox, ... - the set depends on the SMC version). "
-                    "--details adds the node status attributes.",
+        help="per-node utilization metrics, one row per firewall node",
+        description="Show one row per firewall node. By default only "
+                    "utilization metrics (CPU/load/memory/usage-style values, "
+                    "as far as the SMC version reports them); --details shows "
+                    "every appliance metric plus the node status attributes.",
     )
     m.add_argument(
         "--domain", action="append",
@@ -70,8 +71,9 @@ def attach(sub):
     )
     m.add_argument(
         "-d", "--details", action="store_true",
-        help="also include node status attributes (status, state, version, "
-             "dynamic update package, installed policy, ...)",
+        help="show every appliance metric plus node status attributes (status, "
+             "state, version, dynamic update package, installed policy, ...) "
+             "instead of only the utilization columns",
     )
     _add_connection_flags(m)
     m.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
@@ -206,6 +208,11 @@ def run_domains(args):
 
 # fixed leading columns of `show metrics`; metric columns are dynamic
 METRICS_BASE = [("domain", "Domain"), ("node", "Node")]
+
+# default (non --details) view: only utilization-style metrics. Matched with
+# word boundaries so e.g. 'Upload' does not hit 'load'. If a future SMC starts
+# reporting CPU/memory through appliance_status, they show up automatically.
+_COMPACT_RE = re.compile(r"\b(cpu|load|memory|mem|usage)\b", re.IGNORECASE)
 
 # preferred ordering for --details node status attributes; anything else the
 # SMC returns is appended alphabetically
@@ -352,12 +359,17 @@ def run_metrics(args):
         print("%s: error: %s" % (PROG, err), file=sys.stderr)
 
     if rows:
+        if not args.details:
+            metric_keys = [k for k in metric_keys if _COMPACT_RE.search(k)]
         columns = METRICS_BASE + [(k, k) for k in metric_keys]
+        keys = [k for k, _ in columns]
         if args.json:
             for row in rows:
-                print(json.dumps(row, separators=(",", ":")))
+                print(json.dumps({k: row[k] for k in keys if k in row},
+                                 separators=(",", ":")))
         elif args.csv:
-            writer = csv.DictWriter(sys.stdout, fieldnames=[k for k, _ in columns], restval="")
+            writer = csv.DictWriter(sys.stdout, fieldnames=keys, restval="",
+                                    extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
         else:
