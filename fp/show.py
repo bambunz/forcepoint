@@ -218,18 +218,36 @@ _STATUS_ATTR_ORDER = [
 def _flatten_hardware(raw):
     """Flatten an appliance_status response into {'SubSystem Label Param': value}.
 
-    Handles both the pre-6.7 and 6.7+ response shapes; the metric set varies
-    with SMC version and appliance features.
+    Real-world payloads vary by SMC version: the subsystem list may sit
+    directly under 'hardware_statuses' or be nested one level deeper
+    ('hardware_statuses.hardware_statuses'), and each item is either flat
+    ({'name': ..., 'value': ...}) or carries a 'statuses' list of
+    label/param/value entries.
     """
+    outer = raw.get("hardware_statuses", [])
+    if isinstance(outer, dict):
+        subsystems = outer.get("hardware_statuses", [])
+    else:
+        subsystems = outer
+
     metrics = {}
-    for subsys in raw.get("hardware_statuses", []):
+    for subsys in subsystems:
+        if not isinstance(subsys, dict):
+            continue
         subsys_name = subsys.get("name", "")
         for item in subsys.get("items", []):
-            for status in item.get("statuses", []):
-                parts = [status.get("sub_system") or subsys_name,
-                         status.get("label"), status.get("param")]
-                key = " ".join(str(part) for part in parts if part)
-                metrics[key] = str(status.get("value", ""))
+            if not isinstance(item, dict):
+                continue
+            statuses = item.get("statuses")
+            if statuses:
+                for status in statuses:
+                    parts = [status.get("sub_system") or subsys_name,
+                             status.get("label"), status.get("param")]
+                    key = " ".join(str(part) for part in parts if part)
+                    metrics[key] = str(status.get("value", ""))
+            elif "value" in item:
+                key = " ".join(part for part in (subsys_name, item.get("name")) if part)
+                metrics[key] = str(item.get("value", ""))
     return metrics
 
 
