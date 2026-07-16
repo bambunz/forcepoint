@@ -27,6 +27,22 @@ def grep_lines(text: str, pattern: "re.Pattern") -> str:
     return "\n".join(kept) + ("\n" if kept else "")
 
 
+def table_lines(rows, columns):
+    """Render rows (list of dicts) as aligned text lines: header, separator,
+    one line per row. `columns` is a list of (key, header) tuples; missing
+    keys render empty."""
+    keys = [k for k, _ in columns]
+    headers = {k: h for k, h in columns}
+    widths = {k: max(len(headers[k]), *(len(r.get(k, "")) for r in rows)) for k in keys}
+
+    header_line = "  ".join(headers[k].ljust(widths[k]) for k in keys)
+    lines = [header_line, "-" * len(header_line)]
+    for row in rows:
+        line = "  ".join(row.get(k, "").ljust(widths[k]) for k in keys)
+        lines.append(line.rstrip())
+    return lines
+
+
 def strip_trailing_padding(text: str) -> str:
     """TableFormat pads every column to the widest value in the batch, which can
     leave short rows with a lot of dead trailing whitespace. On a narrower terminal

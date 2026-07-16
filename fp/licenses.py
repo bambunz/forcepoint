@@ -14,7 +14,7 @@ from smc.api.exceptions import SMCException
 
 from fp import show
 from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config, load_smtp_config
-from fp.output import color_enabled
+from fp.output import color_enabled, table_lines
 
 PROG = "fp license"
 
@@ -265,20 +265,6 @@ def output_details(rows, use_color):
         width = max(len(k) for k in row)
         for key, value in row.items():
             print("  %-*s  %s" % (width + 1, key + ":", value))
-
-
-def table_lines(rows, columns):
-    """Render rows as aligned text lines: header, separator, one line per row."""
-    keys = [k for k, _ in columns]
-    headers = {k: h for k, h in columns}
-    widths = {k: max(len(headers[k]), *(len(r.get(k, "")) for r in rows)) for k in keys}
-
-    header_line = "  ".join(headers[k].ljust(widths[k]) for k in keys)
-    lines = [header_line, "-" * len(header_line)]
-    for row in rows:
-        line = "  ".join(row.get(k, "").ljust(widths[k]) for k in keys)
-        lines.append(line.rstrip())
-    return lines
 
 
 def output_table(rows, use_color, columns=None):

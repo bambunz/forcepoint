@@ -13,6 +13,7 @@ fp COMMAND [options]
 | `fp license` / `fp licenses` | License inventory — type, status, binding, expiry — per admin domain |
 | `fp changes pending` | Changes pending approval/commit on each engine, per admin domain |
 | `fp show domains` | List the admin domains you can pass to `--domain` (including `all`) |
+| `fp show metrics` | Appliance metrics per firewall node, one row per node |
 
 ## Requirements
 
@@ -398,8 +399,7 @@ fp changes pending --json | jq -c 'select(.approved_on == "")'
 
 ## fp show
 
-Lists the values you can pass to other commands. First (and currently only)
-subcommand: `domains`.
+Read-only views of SMC state. Subcommands: `domains` and `metrics`.
 
 ```
 $ fp show domains
@@ -426,6 +426,57 @@ fp changes pending show domains
 
 All four are equivalent. `--json` emits the list as a JSON array. Connection
 flags (`--profile`, `--url`, `--api-key`, `--insecure`, ...) work as usual.
+
+### fp show metrics
+
+One row per firewall node: Domain, Node, then one column per appliance metric
+the SMC reports for that node — filesystem usage/size, logging subsystem,
+sandbox, anti-malware, MLC connection, and whatever else your SMC version and
+appliance features expose. Columns are built dynamically from the data, so
+newer SMC versions with richer per-node statistics show more columns without
+any change to `fp`.
+
+```
+$ fp show metrics
+fp show: profile=default url=https://smc.acme.example:8082 domains=Acme-Corp
+Domain     Node         File Systems Data Usage  File Systems Spool Usage  Logging subsystem Log rate entries/s  ...
+---------------------------------------------------------------------------------------------------------------------
+Acme-Corp  fw-1 node 1  6.3%                     4.9%                      12
+Acme-Corp  fw-1 node 2  7.1%                     5.2%                      9
+```
+
+```bash
+# Profile domain (default), table
+fp show metrics
+
+# All domains, plus node status attributes (state, version, policy, ...)
+fp show metrics --domain all --details
+
+# CSV / JSON for monitoring pipelines
+fp show metrics --csv > metrics.csv
+fp show metrics --json | jq 'select(.["File Systems Spool Usage"] // "0" | rtrimstr("%") | tonumber > 80)'
+```
+
+Domain selection follows the usual rules (profile domain by default, `--domain`
+with `all` or comma-separated lists). Nodes that fail to report (offline,
+unsupported) are listed with empty metric cells and the error goes to stderr.
+
+> **Note on CPU/memory/traffic:** the SMC REST API does not expose the
+> CPU/memory/throughput counters used by the Management Client's graphs (those
+> live in the Log Server's statistical store, which has no public API). If your
+> SMC version reports such values through the appliance status resource, they
+> appear here automatically; otherwise this table is limited to what the API
+> provides.
+
+#### metrics flags
+
+| Flag | Description |
+|---|---|
+| `--domain NAME` | Domain(s) to query: repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
+| `-d, --details` | Also include node status attributes (status, state, version, dyn_up, platform, configuration status, installed policy, ...). |
+| `--json` | Newline-delimited JSON, one object per node. |
+| `--csv` | CSV with header row. |
+| `--profile / --config / --url / --api-key / --api-version / --insecure` | As in the other commands. |
 
 ## How it works
 

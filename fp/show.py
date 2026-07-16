@@ -1,3 +1,4 @@
+import csv
 import json
 import sys
 import warnings
@@ -8,6 +9,7 @@ from smc.administration.system import AdminDomain
 from smc.api.exceptions import SMCException
 
 from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from fp.output import table_lines
 
 PROG = "fp show"
 
@@ -29,7 +31,7 @@ def _add_connection_flags(p):
     p.add_argument("--api-key", help="SMC API key")
     p.add_argument("--api-version", help="SMC API version override")
     p.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
-    p.add_argument("--json", action="store_true", help="emit a JSON array instead of one name per line")
+    p.add_argument("--json", action="store_true", help="emit JSON instead of text output")
 
 
 def attach(sub):
@@ -51,6 +53,29 @@ def attach(sub):
     )
     _add_connection_flags(d)
     d.set_defaults(func=run_domains)
+
+    m = ssub.add_parser(
+        "metrics",
+        help="per-node appliance metrics, one row per firewall node",
+        description="Show one row per firewall node with every appliance metric "
+                    "the SMC reports (filesystem usage, logging subsystem, "
+                    "sandbox, ... - the set depends on the SMC version). "
+                    "--details adds the node status attributes.",
+    )
+    m.add_argument(
+        "--domain", action="append",
+        help="administrative domain(s) to query, repeatable or comma-separated "
+             "('domain1,domain2'); 'all' = every domain visible to the API key. "
+             "Default: the profile's domain, or all domains if the profile has none",
+    )
+    m.add_argument(
+        "-d", "--details", action="store_true",
+        help="also include node status attributes (status, state, version, "
+             "dynamic update package, installed policy, ...)",
+    )
+    _add_connection_flags(m)
+    m.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
+    m.set_defaults(func=run_metrics)
     return p
 
 
@@ -177,3 +202,150 @@ def run_domains(args):
         for name in names:
             print(name)
     return 0
+
+
+# fixed leading columns of `show metrics`; metric columns are dynamic
+METRICS_BASE = [("domain", "Domain"), ("node", "Node")]
+
+# preferred ordering for --details node status attributes; anything else the
+# SMC returns is appended alphabetically
+_STATUS_ATTR_ORDER = [
+    "status", "state", "version", "dyn_up", "platform",
+    "configuration_status", "installed_policy",
+]
+
+
+def _flatten_hardware(raw):
+    """Flatten an appliance_status response into {'SubSystem Label Param': value}.
+
+    Handles both the pre-6.7 and 6.7+ response shapes; the metric set varies
+    with SMC version and appliance features.
+    """
+    metrics = {}
+    for subsys in raw.get("hardware_statuses", []):
+        subsys_name = subsys.get("name", "")
+        for item in subsys.get("items", []):
+            for status in item.get("statuses", []):
+                parts = [status.get("sub_system") or subsys_name,
+                         status.get("label"), status.get("param")]
+                key = " ".join(str(part) for part in parts if part)
+                metrics[key] = str(status.get("value", ""))
+    return metrics
+
+
+def _node_status_attrs(node):
+    """Node status attributes as {key: str}, in a stable display order."""
+    data = dict(node.health)
+    data.pop("name", None)  # already the Node column
+    ordered = {}
+    for key in _STATUS_ATTR_ORDER:
+        if key in data:
+            ordered[key] = str(data.pop(key) or "")
+    for key in sorted(data):
+        ordered[key] = str(data[key] or "")
+    return ordered
+
+
+def collect_metrics(args, config):
+    """Walk domains/engines/nodes; return (rows, metric_keys, errors)."""
+    from smc.core.engine import Engine
+
+    rows, errors = [], []
+    metric_keys = []  # first-seen order across all nodes
+
+    session.login(
+        url=config.url,
+        api_key=config.api_key,
+        verify=config.verify,
+        domain=initial_login_domain(args.domain, config),
+        api_version=config.api_version,
+        timeout=config.timeout,
+    )
+    try:
+        domains = select_domains(args.domain, config, PROG)
+        for domain in domains:
+            try:
+                session.switch_domain(domain)
+                for engine in Engine.objects.all():
+                    for node in engine.nodes:
+                        row = {"domain": domain, "node": node.name}
+                        try:
+                            if args.details:
+                                row.update(_node_status_attrs(node))
+                            raw = node.make_request(resource="appliance_status")
+                            row.update(_flatten_hardware(raw))
+                        except SMCException as exc:
+                            errors.append("%s/%s: %s" % (domain, node.name, exc))
+                        for key in row:
+                            if key not in ("domain", "node") and key not in metric_keys:
+                                metric_keys.append(key)
+                        rows.append(row)
+            except SMCException as exc:
+                errors.append("%s: %s" % (domain, exc))
+    finally:
+        try:
+            session.logout()
+        except Exception:
+            pass
+
+    rows.sort(key=lambda r: (r["domain"].lower(), r["node"].lower()))
+    return rows, metric_keys, errors
+
+
+def run_metrics(args):
+    try:
+        config = load_config(
+            profile=args.profile,
+            config_path=args.config,
+            cli_overrides={
+                "url": args.url,
+                "api_key": args.api_key,
+                "api_version": args.api_version,
+                "verify": False if args.insecure else None,
+            },
+            require_domain=False,
+        )
+    except ConfigError as exc:
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
+        return 2
+
+    if config.verify is False:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    requested = normalize_domains(args.domain)
+    domains_label = ",".join(requested) if requested else (config.domain or "all")
+    print(
+        "%s: profile=%s url=%s domains=%s" % (PROG, args.profile, config.url, domains_label),
+        file=sys.stderr,
+    )
+
+    try:
+        rows, metric_keys, errors = collect_metrics(args, config)
+    except ConfigError as exc:
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
+        return 2
+    except SMCException as exc:
+        print("%s: could not log in to %s: %s" % (PROG, config.url, exc), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+    for err in errors:
+        print("%s: error: %s" % (PROG, err), file=sys.stderr)
+
+    if rows:
+        columns = METRICS_BASE + [(k, k) for k in metric_keys]
+        if args.json:
+            for row in rows:
+                print(json.dumps(row, separators=(",", ":")))
+        elif args.csv:
+            writer = csv.DictWriter(sys.stdout, fieldnames=[k for k, _ in columns], restval="")
+            writer.writeheader()
+            writer.writerows(rows)
+        else:
+            for line in table_lines(rows, columns):
+                print(line)
+    elif not errors:
+        print("%s: no firewall nodes found" % PROG, file=sys.stderr)
+
+    return 1 if errors else 0
