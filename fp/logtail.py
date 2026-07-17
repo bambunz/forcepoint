@@ -11,6 +11,7 @@ from smc.api.exceptions import SMCException
 from smc_monitoring.models.constants import LogField
 from smc_monitoring.models.formatters import RawDictFormat, TableFormat
 from smc_monitoring.monitors.logs import LogQuery
+from smc_monitoring.wsocket import FetchAborted, InvalidFetch, SessionNotFound
 
 from fp import show
 from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
@@ -78,7 +79,12 @@ def add_parser(sub):
     )
     p.add_argument("--src", action="append", help="filter by source IP (repeatable)")
     p.add_argument("--dst", action="append", help="filter by destination IP (repeatable)")
-    p.add_argument("--sender", action="append", help="filter by sending engine IP / NODEID (repeatable)")
+    p.add_argument(
+        "--sender", action="append",
+        help="filter by sending engine's IP address (repeatable). This is the raw "
+             "NODEID IP, not the resolved 'Sender' label shown in output (e.g. "
+             "'FWBODFPV node 1') - that display name can't be used as a filter value",
+    )
     p.add_argument("--service", action="append", help="filter by service, e.g. TCP/443 (repeatable)")
     p.add_argument(
         "--expr",
@@ -202,6 +208,17 @@ def _connection_hint(exc):
     return None
 
 
+def _query_error_hint(exc):
+    text = str(exc)
+    if "Invalid IP address" in text:
+        return (
+            "--src/--dst/--sender expect a raw IP address, not a resolved display "
+            "name like the 'Sender' column (e.g. 'FWBODFPV node 1'). Use the underlying "
+            "IP instead."
+        )
+    return None
+
+
 def run(args):
     signal.signal(signal.SIGINT, _handle_sigint)
 
@@ -270,6 +287,12 @@ def run(args):
         pass
     except SMCException as exc:
         print("%s: SMC error: %s" % (PROG, exc), file=sys.stderr)
+        return 1
+    except (FetchAborted, InvalidFetch, SessionNotFound) as exc:
+        print("%s: query rejected by SMC: %s" % (PROG, exc), file=sys.stderr)
+        hint = _query_error_hint(exc)
+        if hint:
+            print("%s: %s" % (PROG, hint), file=sys.stderr)
         return 1
     finally:
         session.logout()
