@@ -7,6 +7,7 @@ import warnings
 import urllib3
 from smc import session
 from smc.administration.system import AdminDomain
+from smc.administration.user_auth.servers import ActiveDirectoryServer, LDAPServer
 from smc.api.exceptions import SMCException
 
 from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
@@ -78,6 +79,31 @@ def attach(sub):
     _add_connection_flags(m)
     m.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
     m.set_defaults(func=run_metrics)
+
+    l = ssub.add_parser(
+        "ldap",
+        help="LDAP / Active Directory servers (name and IP) across all domains",
+        description="List the LDAP and Active Directory server elements defined "
+                    "in the SMC, with their name and IP address. Queries every "
+                    "domain by default. Elements owned by the Shared Domain are "
+                    "inherited by every other domain, so they are listed once "
+                    "under the domain that owns them. Passwords and shared "
+                    "secrets are never displayed.",
+    )
+    l.add_argument(
+        "--domain", action="append",
+        help="administrative domain(s) to query, repeatable or comma-separated "
+             "('domain1,domain2'); 'all' = every domain visible to the API key. "
+             "Default: all domains",
+    )
+    l.add_argument(
+        "-d", "--details", action="store_true",
+        help="show connection detail columns (bind user, base DN, timeouts, "
+             "object classes, IAS/NPS settings) instead of only name/address",
+    )
+    _add_connection_flags(l)
+    l.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
+    l.set_defaults(func=run_ldap)
     return p
 
 
@@ -315,6 +341,206 @@ def collect_metrics(args, config):
 
     rows.sort(key=lambda r: (r["domain"].lower(), r["node"].lower()))
     return rows, metric_keys, errors
+
+
+# `show ldap` columns. Base view answers "what is it and where does it live";
+# --details adds the connection settings. Credential fields are deliberately
+# absent from both - see _SECRET_KEYS.
+LDAP_BASE = [
+    ("domain", "Domain"),
+    ("name", "Name"),
+    ("type", "Type"),
+    ("address", "Address"),
+    ("port", "Port"),
+    ("protocol", "Protocol"),
+]
+
+LDAP_DETAILS = [
+    ("base_dn", "Base DN"),
+    ("bind_user_id", "Bind User"),
+    ("timeout", "Timeout"),
+    ("max_search_result", "Max Results"),
+    ("page_size", "Page Size"),
+    ("ias", "IAS"),
+    ("auth_ipaddress", "IAS Address"),
+    ("auth_port", "IAS Port"),
+    ("user_object_class", "User Classes"),
+    ("group_object_class", "Group Classes"),
+]
+
+# Never render these, in any view or output format: the SMC hands back the
+# bind credential and RADIUS/NPS shared secret with the rest of the element.
+_SECRET_KEYS = ("bind_password", "shared_secret")
+
+_LDAP_TYPES = [(ActiveDirectoryServer, "active-directory"), (LDAPServer, "ldap")]
+
+
+def _domain_name_map():
+    """{admin_domain href: domain name}, for attributing an element to the
+    domain that owns it rather than a domain that merely inherits it."""
+    try:
+        return {d.href: d.name for d in AdminDomain.objects.all()}
+    except SMCException:
+        return {}
+
+
+def _ldap_row(element, kind, owner, details):
+    data = element.data
+    row = {
+        "domain": owner,
+        "name": element.name,
+        "type": kind,
+        "address": str(data.get("address") or ""),
+        "port": str(data.get("port") or ""),
+        "protocol": str(data.get("protocol") or ""),
+    }
+    if details:
+        row.update({
+            "base_dn": str(data.get("base_dn") or ""),
+            "bind_user_id": str(data.get("bind_user_id") or ""),
+            "timeout": str(data.get("timeout") or ""),
+            "max_search_result": str(data.get("max_search_result") or ""),
+            "page_size": str(data.get("page_size") or ""),
+            "ias": "yes" if data.get("internet_auth_service_enabled") else "no",
+            "auth_ipaddress": str(data.get("auth_ipaddress") or ""),
+            "auth_port": str(data.get("auth_port") or ""),
+            "user_object_class": ",".join(data.get("user_object_class") or []),
+            "group_object_class": ",".join(data.get("group_object_class") or []),
+        })
+    return row
+
+
+def _domain_controller_rows(element, owner, details):
+    """Extra domain controllers configured on an AD element carry their own
+    IP, so surface them as their own rows."""
+    rows = []
+    for dc in element.data.get("domain_controller", []) or []:
+        if not isinstance(dc, dict):
+            continue
+        row = {
+            "domain": owner,
+            "name": "%s / %s" % (element.name, dc.get("ipaddress") or "?"),
+            "type": "ad-domain-controller",
+            "address": str(dc.get("ipaddress") or ""),
+            "port": str(dc.get("port") or ""),
+            "protocol": str(dc.get("server_type") or ""),
+        }
+        if details:
+            row.update({
+                "bind_user_id": str(dc.get("user") or ""),
+                "timeout": str(dc.get("expiration_time") or ""),
+            })
+        rows.append(row)
+    return rows
+
+
+def collect_ldap(args, config):
+    """Walk domains collecting LDAP/AD server elements; return (rows, errors).
+
+    Shared Domain elements are visible from every domain with the same href,
+    so dedupe on href and attribute each element to its owning admin_domain.
+    """
+    rows, errors = [], []
+    seen = set()
+
+    session.login(
+        url=config.url,
+        api_key=config.api_key,
+        verify=config.verify,
+        domain=initial_login_domain(args.domain or [ALL], config),
+        api_version=config.api_version,
+        timeout=config.timeout,
+    )
+    try:
+        domain_names = _domain_name_map()
+        for domain in select_domains(args.domain or [ALL], config, PROG):
+            try:
+                session.switch_domain(domain)
+                for cls, kind in _LDAP_TYPES:
+                    for element in cls.objects.all():
+                        try:
+                            if element.href in seen:
+                                continue
+                            seen.add(element.href)
+                            owner = domain_names.get(
+                                element.data.get("admin_domain"), domain)
+                            rows.append(_ldap_row(element, kind, owner, args.details))
+                            rows.extend(
+                                _domain_controller_rows(element, owner, args.details))
+                        except SMCException as exc:
+                            errors.append("%s/%s: %s" % (domain, cls.__name__, exc))
+            except SMCException as exc:
+                errors.append("%s: %s" % (domain, exc))
+    finally:
+        try:
+            session.logout()
+        except Exception:
+            pass
+
+    rows.sort(key=lambda r: (r["domain"].lower(), r["name"].lower()))
+    return rows, errors
+
+
+def run_ldap(args):
+    try:
+        config = load_config(
+            profile=args.profile,
+            config_path=args.config,
+            cli_overrides={
+                "url": args.url,
+                "api_key": args.api_key,
+                "api_version": args.api_version,
+                "verify": False if args.insecure else None,
+            },
+            require_domain=False,
+        )
+    except ConfigError as exc:
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
+        return 2
+
+    if config.verify is False:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    requested = normalize_domains(args.domain)
+    print(
+        "%s: profile=%s url=%s domains=%s"
+        % (PROG, args.profile, config.url, ",".join(requested) if requested else ALL),
+        file=sys.stderr,
+    )
+
+    try:
+        rows, errors = collect_ldap(args, config)
+    except ConfigError as exc:
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
+        return 2
+    except SMCException as exc:
+        print("%s: could not log in to %s: %s" % (PROG, config.url, exc), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+    for err in errors:
+        print("%s: error: %s" % (PROG, err), file=sys.stderr)
+
+    if rows:
+        columns = LDAP_BASE + (LDAP_DETAILS if args.details else [])
+        keys = [k for k, _ in columns]
+        if args.json:
+            for row in rows:
+                print(json.dumps({k: row[k] for k in keys if k in row},
+                                 separators=(",", ":")))
+        elif args.csv:
+            writer = csv.DictWriter(sys.stdout, fieldnames=keys, restval="",
+                                    extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        else:
+            for line in table_lines(rows, columns):
+                print(line)
+    elif not errors:
+        print("%s: no LDAP or Active Directory servers found" % PROG, file=sys.stderr)
+
+    return 1 if errors else 0
 
 
 def run_metrics(args):
