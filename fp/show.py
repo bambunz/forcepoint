@@ -9,6 +9,7 @@ from smc import session
 from smc.administration.system import AdminDomain
 from smc.administration.user_auth.servers import ActiveDirectoryServer, LDAPServer
 from smc.api.exceptions import SMCException
+from smc.base.model import Element
 
 from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from fp.output import table_lines
@@ -353,6 +354,7 @@ LDAP_BASE = [
     ("address", "Address"),
     ("port", "Port"),
     ("protocol", "Protocol"),
+    ("contact_addresses", "Contact Addresses"),
 ]
 
 LDAP_DETAILS = [
@@ -384,7 +386,40 @@ def _domain_name_map():
         return {}
 
 
-def _ldap_row(element, kind, owner, details):
+def _location_name(href, cache):
+    """Resolve a location href to its name, memoized - the SMC only hands back
+    the href on a contact address, and resolving it is a request each time."""
+    if href not in cache:
+        try:
+            cache[href] = Element.from_href(href).name
+        except (SMCException, ValueError, AttributeError):
+            cache[href] = ""
+    return cache[href]
+
+
+def _contact_addresses(element, loc_cache):
+    """'location=addr[,addr]; ...' for an element, '' if it has none.
+
+    Contact addresses hang off their own relation link rather than arriving
+    with the element, so reading them costs one extra request per server.
+    """
+    try:
+        pairs = []
+        for ca in element.contact_addresses:
+            addresses = ",".join(ca.addresses or [])
+            if not addresses:
+                continue
+            try:
+                location = _location_name(ca.location_ref, loc_cache)
+            except (SMCException, KeyError):
+                location = ""
+            pairs.append("%s=%s" % (location, addresses) if location else addresses)
+        return "; ".join(pairs)
+    except SMCException:
+        return ""
+
+
+def _ldap_row(element, kind, owner, details, loc_cache):
     data = element.data
     row = {
         "domain": owner,
@@ -393,6 +428,7 @@ def _ldap_row(element, kind, owner, details):
         "address": str(data.get("address") or ""),
         "port": str(data.get("port") or ""),
         "protocol": str(data.get("protocol") or ""),
+        "contact_addresses": _contact_addresses(element, loc_cache),
     }
     if details:
         row.update({
@@ -442,6 +478,7 @@ def collect_ldap(args, config):
     """
     rows, errors = [], []
     seen = set()
+    loc_cache = {}
 
     session.login(
         url=config.url,
@@ -464,7 +501,8 @@ def collect_ldap(args, config):
                             seen.add(element.href)
                             owner = domain_names.get(
                                 element.data.get("admin_domain"), domain)
-                            rows.append(_ldap_row(element, kind, owner, args.details))
+                            rows.append(
+                                _ldap_row(element, kind, owner, args.details, loc_cache))
                             rows.extend(
                                 _domain_controller_rows(element, owner, args.details))
                         except SMCException as exc:
