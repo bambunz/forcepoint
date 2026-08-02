@@ -100,9 +100,10 @@ def _add_cron_parser(nested):
         help="email a report of licenses expiring within N days (for crontab)",
         description="Check license expiration dates and email a table (like the "
                     "normal license output) of those expiring within N days. "
-                    "Sends nothing when no license is close to expiry. SMTP "
-                    "settings come from the [smtp] section of the config file, "
-                    "overridable with flags.",
+                    "Licenses still bound to <Unknown> are skipped unless "
+                    "--include-unknown is given. Sends nothing when no license "
+                    "is close to expiry. SMTP settings come from the [smtp] "
+                    "section of the config file, overridable with flags.",
     )
     c.add_argument(
         "--days", type=int, default=30,
@@ -129,6 +130,12 @@ def _add_cron_parser(nested):
     c.add_argument("--smtp-password", help="SMTP password (overrides config 'password =')")
     c.add_argument("--starttls", action="store_true", default=None,
                    help="use STARTTLS (overrides config 'starttls =')")
+    c.add_argument(
+        "--include-unknown", action="store_true",
+        help="also report licenses still bound to <Unknown> after cross-domain "
+             "resolution (excluded by default: the bound element is not visible "
+             "to this API key, so the alert is not actionable)",
+    )
     c.add_argument("--dry-run", action="store_true",
                    help="print the email to stdout instead of sending it")
     c.set_defaults(func=run_cron, details=False)
@@ -408,6 +415,18 @@ def run_cron(args):
             "were not checked" % (PROG, unparsable),
             file=sys.stderr,
         )
+
+    if not args.include_unknown:
+        kept = [h for h in hits if not _is_unknown(h["bound_to"])]
+        skipped = len(hits) - len(kept)
+        if skipped:
+            print(
+                "%s: skipped %d expiring license(s) still bound to <Unknown> - "
+                "the bound element is not visible to this API key in any queried "
+                "domain; pass --include-unknown to report them" % (PROG, skipped),
+                file=sys.stderr,
+            )
+        hits = kept
 
     if not hits:
         print(
