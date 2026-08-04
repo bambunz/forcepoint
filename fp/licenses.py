@@ -87,6 +87,13 @@ def add_parser(sub):
         help="list only licenses not bound to an engine (binding state "
              "Unassigned/Unbound) - i.e. the spare licenses available to assign",
     )
+    p.add_argument(
+        "--per-domain", action="store_true",
+        help="emit one row per queried domain instead of one row per license. "
+             "The SMC license list is management-server-wide, so every domain "
+             "returns the same licenses; by default each is reported once, "
+             "attributed to the domain owning the bound element",
+    )
     fmt = p.add_mutually_exclusive_group()
     fmt.add_argument("--json", action="store_true", help="emit newline-delimited JSON instead of table text")
     fmt.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
@@ -263,14 +270,29 @@ def dedupe_licenses(rows):
     strictly shortest. Domain name breaks ties (unbound licenses, which have
     no owning domain and an empty binding everywhere).
     """
-    best = {}
+    best, bindings, copies = {}, {}, {}
     for row in rows:
         key = row["license_id"] or id(row)  # unidentified rows never collapse
+        bindings.setdefault(key, set()).add(row["bound_to"])
+        copies[key] = copies.get(key, 0) + 1
         current = best.get(key)
         if current is None or (len(row["bound_to"]), row["domain"]) < (
                 len(current["bound_to"]), current["domain"]):
             best[key] = row
-    return list(best.values())
+
+    collapsed = []
+    for key, row in best.items():
+        # Only a license whose binding resolved differently per domain has an
+        # identifiable owner. When every copy reads the same the domain we kept
+        # is just the first one queried - true for unbound licenses (empty
+        # everywhere) and for elements visible from every domain, such as the
+        # Management Server - so do not imply the license belongs to it.
+        if copies[key] > 1 and len(bindings[key]) < 2:
+            row = dict(row, domain="")
+        collapsed.append(row)
+
+    collapsed.sort(key=lambda r: (r["domain"].lower(), r["type"].lower(), r["license_id"]))
+    return collapsed
 
 
 def _status_color(row):
@@ -538,6 +560,8 @@ def run(args):
     for err in errors:
         print("%s: error: %s" % (PROG, err), file=sys.stderr)
 
+    if not args.per_domain:
+        rows = dedupe_licenses(rows)
     if args.unassigned:
         rows = [r for r in rows if _is_unassigned(r["status"])]
 
