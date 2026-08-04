@@ -24,6 +24,7 @@ COLUMNS = [
     ("domain", "Domain"),
     ("license_id", "License Id"),
     ("type", "Type"),
+    ("version", "Version"),
     ("status", "Status"),
     ("bound_to", "Bound To"),
     ("expiration_date", "Expires"),
@@ -158,8 +159,8 @@ def _add_cron_parser(nested):
 
 # raw License attributes already represented by the standard columns
 _MAPPED_ATTRS = {
-    "license_id", "type", "binding_state", "bound_to", "customer_name",
-    "expiration_date", "maintenance_contract_expires_date",
+    "license_id", "type", "license_version", "binding_state", "bound_to",
+    "customer_name", "expiration_date", "maintenance_contract_expires_date",
 }
 
 
@@ -179,6 +180,8 @@ def _license_row(domain, lic, details=False):
         "customer": str(lic.customer_name or ""),
         "license_id": str(lic.license_id or ""),
         "type": str(lic.type or ""),
+        # not every license type carries a version
+        "version": str(getattr(lic, "license_version", "") or ""),
         "status": str(lic.binding_state or ""),
         "bound_to": str(lic.bound_to or ""),
         "expiration_date": str(lic.expiration_date or ""),
