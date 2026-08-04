@@ -100,7 +100,9 @@ def _add_cron_parser(nested):
         help="email a report of licenses expiring within N days (for crontab)",
         description="Check license expiration dates and email a table (like the "
                     "normal license output) of those expiring within N days. "
-                    "Licenses still bound to <Unknown> are skipped unless "
+                    "The license list is management-server-wide, so each "
+                    "license is reported once even when several domains are "
+                    "queried. Licenses still bound to <Unknown> are skipped unless "
                     "--include-unknown is given. Sends nothing when no license "
                     "is close to expiry. SMTP settings come from the [smtp] "
                     "section of the config file, overridable with flags.",
@@ -233,6 +235,29 @@ def _resolve_cross_domain(rows):
         if row["bound_to"] and _is_unknown(row["bound_to"]) and row["license_id"] in known:
             name, domain = known[row["license_id"]]
             row["bound_to"] = "%s (%s)" % (name, domain)
+
+
+def dedupe_licenses(rows):
+    """Collapse the per-domain copies of each license into one row.
+
+    System().licenses is management-server-wide, not per-domain: querying N
+    domains returns every license N times (15 domains x 63 licenses = 945
+    rows here). Keep one row per license id.
+
+    Prefer the row from the domain that owns the bound element, which is the
+    one the SMC resolved natively - _resolve_cross_domain only ever appends
+    " (domain)" to the other copies, so the owning domain's binding is the
+    strictly shortest. Domain name breaks ties (unbound licenses, which have
+    no owning domain and an empty binding everywhere).
+    """
+    best = {}
+    for row in rows:
+        key = row["license_id"] or id(row)  # unidentified rows never collapse
+        current = best.get(key)
+        if current is None or (len(row["bound_to"]), row["domain"]) < (
+                len(current["bound_to"]), current["domain"]):
+            best[key] = row
+    return list(best.values())
 
 
 def _status_color(row):
@@ -407,6 +432,8 @@ def run_cron(args):
 
     for err in errors:
         print("%s: error: %s" % (PROG, err), file=sys.stderr)
+
+    rows = dedupe_licenses(rows)
 
     hits, unparsable = expiring_rows(rows, args.days)
     if unparsable:
