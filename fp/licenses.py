@@ -82,6 +82,11 @@ def add_parser(sub):
              "features, customer name, ...) - useful to identify licenses whose "
              "binding shows as <Unknown>",
     )
+    p.add_argument(
+        "--unassigned", action="store_true",
+        help="list only licenses not bound to an engine (binding state "
+             "Unassigned/Unbound) - i.e. the spare licenses available to assign",
+    )
     fmt = p.add_mutually_exclusive_group()
     fmt.add_argument("--json", action="store_true", help="emit newline-delimited JSON instead of table text")
     fmt.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
@@ -235,6 +240,14 @@ def _resolve_cross_domain(rows):
         if row["bound_to"] and _is_unknown(row["bound_to"]) and row["license_id"] in known:
             name, domain = known[row["license_id"]]
             row["bound_to"] = "%s (%s)" % (name, domain)
+
+
+def _is_unassigned(status):
+    """True for a license not bound to an engine. The SMC reports this as
+    'Unassigned'; 'Unbound' is accepted too, matching how _status_color
+    already groups the two."""
+    status = status.lower()
+    return "unassigned" in status or "unbound" in status
 
 
 def dedupe_licenses(rows):
@@ -525,6 +538,9 @@ def run(args):
     for err in errors:
         print("%s: error: %s" % (PROG, err), file=sys.stderr)
 
+    if args.unassigned:
+        rows = [r for r in rows if _is_unassigned(r["status"])]
+
     if rows:
         cols = _columns(args.show_customer)
         if args.json:
@@ -547,6 +563,7 @@ def run(args):
                     file=sys.stderr,
                 )
     elif not errors:
-        print("%s: no licenses found" % PROG, file=sys.stderr)
+        print("%s: no %slicenses found" % (PROG, "unassigned " if args.unassigned else ""),
+              file=sys.stderr)
 
     return 1 if errors else 0
