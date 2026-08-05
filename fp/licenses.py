@@ -89,6 +89,13 @@ def add_parser(sub):
              "Unassigned/Unbound) - i.e. the spare licenses available to assign",
     )
     p.add_argument(
+        "--all-licenses", action="store_true",
+        help="also list licenses bound to engines in other administrative "
+             "domains. The SMC license list is management-server-wide, so these "
+             "come back from any domain but cannot be resolved from it and show "
+             "as <Unknown>; they are hidden by default",
+    )
+    p.add_argument(
         "--per-domain", action="store_true",
         help="emit one row per queried domain instead of one row per license. "
              "The SMC license list is management-server-wide, so every domain "
@@ -565,6 +572,18 @@ def run(args):
 
     if not args.per_domain:
         rows = dedupe_licenses(rows)
+
+    # The SMC license list is management-server-wide, so querying one domain
+    # still returns licenses bound to engines in every other domain. Those
+    # cannot be resolved from here and read <Unknown>; drop them so the
+    # listing shows what the queried domain(s) actually own. Unbound and
+    # server-wide licenses stay - they belong to no single domain.
+    hidden = 0
+    if not args.all_licenses:
+        keep = [r for r in rows if not _is_unknown(r["bound_to"])]
+        hidden = len(rows) - len(keep)
+        rows = keep
+
     if args.unassigned:
         rows = [r for r in rows if _is_unassigned(r["status"])]
 
@@ -589,6 +608,15 @@ def run(args):
                     "identifying fields." % (PROG, unknown),
                     file=sys.stderr,
                 )
+
+    if hidden:
+        print(
+            "%s: %d license(s) bound to engines in other administrative domains "
+            "were hidden - the SMC license list is management-server-wide. Pass "
+            "--all-licenses to include them, or --domain all to see them resolved "
+            "against their owning domain." % (PROG, hidden),
+            file=sys.stderr,
+        )
     elif not errors:
         print("%s: no %slicenses found" % (PROG, "unassigned " if args.unassigned else ""),
               file=sys.stderr)
