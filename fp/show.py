@@ -105,6 +105,28 @@ def attach(sub):
     _add_connection_flags(l)
     l.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
     l.set_defaults(func=run_ldap)
+
+    v = ssub.add_parser(
+        "version",
+        help="engine software version, one row per firewall node",
+        description="Show the software version running on each firewall node. "
+                    "With --smc, report the Management Server's own version "
+                    "instead and skip the engine walk.",
+    )
+    v.add_argument(
+        "--domain", action="append",
+        help="administrative domain(s) to query, repeatable or comma-separated "
+             "('domain1,domain2'); 'all' = every domain visible to the API key. "
+             "Default: the profile's domain, or all domains if the profile has none",
+    )
+    v.add_argument(
+        "--smc", action="store_true",
+        help="show the SMC (Management Server) version, active dynamic update "
+             "package and API version instead of the engine versions",
+    )
+    _add_connection_flags(v)
+    v.add_argument("--csv", action="store_true", help="emit CSV (with header) instead of table text")
+    v.set_defaults(func=run_version)
     return p
 
 
@@ -577,6 +599,186 @@ def run_ldap(args):
                 print(line)
     elif not errors:
         print("%s: no LDAP or Active Directory servers found" % PROG, file=sys.stderr)
+
+    return 1 if errors else 0
+
+
+VERSION_COLUMNS = [
+    ("domain", "Domain"),
+    ("engine", "Engine"),
+    ("node", "Node"),
+    ("version", "Version"),
+    ("build", "Build"),
+    ("platform", "Platform"),
+    ("dyn_update", "Dyn Update"),
+    ("status", "Status"),
+]
+
+# nodes report their version as e.g. "version 7.3.5 #31184"
+_NODE_VERSION_RE = re.compile(r"^\s*version\s+(\S+?)(?:\s+#(\S+))?\s*$", re.IGNORECASE)
+
+
+def _split_node_version(raw):
+    """('7.3.5', '31184') from 'version 7.3.5 #31184'; the raw string as the
+    version with no build if an SMC release words it differently."""
+    raw = str(raw or "").strip()
+    match = _NODE_VERSION_RE.match(raw)
+    if not match:
+        return raw, ""
+    return match.group(1), match.group(2) or ""
+
+
+def collect_versions(args, config):
+    """Walk domains/engines/nodes; return (rows, errors)."""
+    from smc.core.engine import Engine
+
+    rows, errors = [], []
+
+    session.login(
+        url=config.url,
+        api_key=config.api_key,
+        verify=config.verify,
+        domain=initial_login_domain(args.domain, config),
+        api_version=config.api_version,
+        timeout=config.timeout,
+    )
+    try:
+        for domain in select_domains(args.domain, config, PROG):
+            try:
+                session.switch_domain(domain)
+                for engine in Engine.objects.all():
+                    for node in engine.nodes:
+                        row = {"domain": domain, "engine": engine.name, "node": node.name}
+                        try:
+                            health = dict(node.health)
+                            version, build = _split_node_version(health.get("version"))
+                            row.update({
+                                "version": version,
+                                "build": build,
+                                "platform": str(health.get("platform") or ""),
+                                "dyn_update": str(health.get("dyn_up") or ""),
+                                "status": str(health.get("engine_node_status") or ""),
+                            })
+                        except SMCException as exc:
+                            errors.append("%s/%s: %s" % (domain, node.name, exc))
+                        rows.append(row)
+            except SMCException as exc:
+                errors.append("%s: %s" % (domain, exc))
+    finally:
+        try:
+            session.logout()
+        except Exception:
+            pass
+
+    rows.sort(key=lambda r: (r["domain"].lower(), r["engine"].lower(), r["node"].lower()))
+    return rows, errors
+
+
+def collect_smc_version(config):
+    """SMC-wide version facts; not domain specific."""
+    from smc.administration.system import System
+
+    session.login(
+        url=config.url,
+        api_key=config.api_key,
+        verify=config.verify,
+        domain=config.domain or SHARED_DOMAIN,
+        api_version=config.api_version,
+        timeout=config.timeout,
+    )
+    try:
+        system = System()
+        return {
+            "smc_version": str(getattr(system, "smc_version", "") or ""),
+            "dyn_update": str(getattr(system, "last_activated_package", "") or ""),
+            "api_version": str(getattr(session, "api_version", "") or ""),
+        }
+    finally:
+        try:
+            session.logout()
+        except Exception:
+            pass
+
+
+def run_version(args):
+    try:
+        config = load_config(
+            profile=args.profile,
+            config_path=args.config,
+            cli_overrides={
+                "url": args.url,
+                "api_key": args.api_key,
+                "api_version": args.api_version,
+                "verify": False if args.insecure else None,
+            },
+            require_domain=False,
+        )
+    except ConfigError as exc:
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
+        return 2
+
+    if config.verify is False:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    if args.smc:
+        print("%s: url=%s" % (PROG, config.url), file=sys.stderr)
+        try:
+            info = collect_smc_version(config)
+        except SMCException as exc:
+            print("%s: could not log in to %s: %s" % (PROG, config.url, exc), file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            return 130
+
+        if args.json:
+            print(json.dumps(info, separators=(",", ":")))
+        elif args.csv:
+            writer = csv.DictWriter(sys.stdout, fieldnames=list(info))
+            writer.writeheader()
+            writer.writerow(info)
+        else:
+            for label, key in (("SMC version", "smc_version"),
+                               ("Dynamic update package", "dyn_update"),
+                               ("API version", "api_version")):
+                print("%-23s %s" % (label + ":", info[key]))
+        return 0
+
+    requested = normalize_domains(args.domain)
+    domains_label = ",".join(requested) if requested else (config.domain or ALL)
+    print(
+        "%s: profile=%s url=%s domains=%s" % (PROG, args.profile, config.url, domains_label),
+        file=sys.stderr,
+    )
+
+    try:
+        rows, errors = collect_versions(args, config)
+    except ConfigError as exc:
+        print("%s: %s" % (PROG, exc), file=sys.stderr)
+        return 2
+    except SMCException as exc:
+        print("%s: could not log in to %s: %s" % (PROG, config.url, exc), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+    for err in errors:
+        print("%s: error: %s" % (PROG, err), file=sys.stderr)
+
+    if rows:
+        keys = [k for k, _ in VERSION_COLUMNS]
+        if args.json:
+            for row in rows:
+                print(json.dumps({k: row.get(k, "") for k in keys}, separators=(",", ":")))
+        elif args.csv:
+            writer = csv.DictWriter(sys.stdout, fieldnames=keys, restval="",
+                                    extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        else:
+            for line in table_lines(rows, VERSION_COLUMNS):
+                print(line)
+    elif not errors:
+        print("%s: no firewall nodes found" % PROG, file=sys.stderr)
 
     return 1 if errors else 0
 
