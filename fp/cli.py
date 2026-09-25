@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from fp import changes, licenses, logtail, show
+from fp import changes, licenses, logtail, show, tasks
 
 
 def main(argv=None):
@@ -14,6 +14,7 @@ def main(argv=None):
     logtail.add_parser(sub)
     licenses.add_parser(sub)
     changes.add_parser(sub)
+    tasks.add_parser(sub)
     show.attach(sub)
 
     args = parser.parse_args(argv)

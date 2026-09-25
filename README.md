@@ -397,6 +397,69 @@ fp changes pending --json | jq -c 'select(.approved_on == "")'
 | `--csv` | Emit CSV with a header row instead of a table. |
 | `--no-color` | Disable ANSI color output (also respects `NO_COLOR`). |
 
+## fp tasks
+
+Scheduled-task management. Currently one action:
+`policies set-refresh` — schedule a policy refresh of **every engine** in a
+domain (or every domain), at 03:30.
+
+```
+$ fp tasks policies set-refresh --when weekly --domain all --dry-run
+fp tasks: profile=default url=https://smc.acme.example:8082 domains=all when=weekly first run=Sun 2026-09-27 03:30 CEST (01:30 UTC) [dry run]
+Acme-Corp: create task
+    engines (3): fw-cluster-1, fw-branch-2, fw-branch-3
+    WARNING: existing task 'Refresh Policy' also refreshes 2 of these engines
+Shared Domain: none (no refreshable engines)
+```
+
+| `--when` | Schedule |
+|---|---|
+| `daily` | every 24 hours, starting at the next 03:30 |
+| `weekly` | every Sunday at 03:30 |
+
+How it behaves:
+
+- **One task per domain, owned by fp**, named `fp - Refresh Policy (all engines)`.
+  Re-running updates that task in place (engine list and schedule) instead of
+  adding duplicates, so it is safe to re-run after adding engines or to switch
+  between `daily` and `weekly`.
+- **Hand-made refresh tasks are never modified.** When one covers the same
+  engines it is reported as a `WARNING`, because the engines would then be
+  refreshed twice on overlapping schedules — decide whether to delete the old
+  task or keep it.
+- The 03:30 is local time in `--timezone` (default `Europe/Zurich`); the SMC
+  stores the start in UTC. Tasks use policy validation, preserve connections
+  and snapshot creation, and alert on failure.
+- Engines without an installed policy, and master/virtual engines (which need
+  a different task type), are skipped and listed as `skipped:`.
+- Always try `--dry-run` first: it reads the SMC and prints the plan without
+  changing anything.
+
+```bash
+# Profile domain, every day at 03:30
+fp tasks policies set-refresh --when daily
+
+# Every domain, Sundays at 03:30 — preview, then apply
+fp tasks policies set-refresh --when weekly --domain all --dry-run
+fp tasks policies set-refresh --when weekly --domain all
+```
+
+### tasks policies set-refresh flags
+
+| Flag | Description |
+|---|---|
+| `--when {daily,weekly}` | **Required.** `daily` = every 24 h from 03:30; `weekly` = Sunday 03:30. |
+| `--domain NAME` | Domain(s): repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
+| `--timezone TZ` | IANA timezone the 03:30 refers to (default: `Europe/Zurich`). |
+| `--dry-run` | Print the plan without changing the SMC. |
+| `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
+| `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
+| `--url URL` | SMC API URL. |
+| `--api-key KEY` | SMC API key. |
+| `--api-version VER` | SMC API version override. |
+| `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
+| `--json` | Emit one JSON object per domain instead of text. |
+
 ## fp show
 
 Read-only views of SMC state. Subcommands: `domains` and `metrics`.
