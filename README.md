@@ -405,52 +405,67 @@ fp changes pending --json | jq -c 'select(.approved_on == "")'
 
 Scheduled-task management. Currently one action:
 `policies set-refresh` — schedule a policy refresh of **every engine** in a
-domain (or every domain), at 04:30 UTC.
+domain (or every domain) at **04:30 in each engine's own timezone**.
 
 ```
-$ fp tasks policies set-refresh --when weekly --domain all --dry-run
-fp tasks: profile=default url=https://smc.acme.example:8082 domains=all when=weekly first run=Sun 2026-09-27 04:30 UTC (04:30 UTC) [dry run]
-Acme-Corp: create task
-    engines (3): fw-cluster-1, fw-branch-2, fw-branch-3
-    WARNING: existing task 'Refresh Policy' also refreshes 2 of these engines
+$ fp tasks policies set-refresh --when daily --domain all --dry-run
+fp tasks: profile=default url=https://smc.acme.example:8082 domains=all when=daily at 04:30 engine-local time (engines without a timezone: UTC) [dry run]
+Acme-Corp:
+    create 'fp - Refresh Policy (Europe/Rome)' - first run Sat 2026-09-26 04:30 CEST (02:30 UTC)
+        engines (2): fw-cluster-1, fw-branch-2
+    create 'fp - Refresh Policy (UTC)' - first run Sat 2026-09-26 04:30 UTC (04:30 UTC)
+        engines (1): fw-branch-3
+    WARNING: existing task 'Refresh Policy' also refreshes 2 of these engines (--disable-overlapping to suspend it)
 Shared Domain: none (no refreshable engines)
 ```
 
 | `--when` | Schedule |
 |---|---|
-| `daily` | every 24 hours, starting at the next 04:30 UTC |
-| `weekly` | every Sunday at 04:30 UTC |
+| `daily` | every 24 hours, from the next 04:30 engine-local time |
+| `weekly` | every Sunday at 04:30 engine-local time |
 
 How it behaves:
 
-- **One task per domain, owned by fp**, named `fp - Refresh Policy (all engines)`.
-  Re-running updates that task in place (engine list and schedule) instead of
-  adding duplicates, so it is safe to re-run after adding engines or to switch
-  between `daily` and `weekly`.
+- **The time follows the engine's timezone** (the engine's *Time zone*
+  property). An engine set to `Europe/Rome` is refreshed at 04:30 Rome time;
+  an engine with no timezone — or UTC — at 04:30 UTC (`--timezone` changes
+  that fallback). The SMC stores the start in UTC.
+- **One task per domain and timezone, owned by fp**, named
+  `fp - Refresh Policy (<timezone>)`. Re-running updates those tasks in place
+  (engine list and schedule), so it is safe to re-run after adding engines,
+  changing an engine's timezone, or switching between `daily` and `weekly`.
+  fp tasks whose timezone group no longer exists are removed.
+- **`Etc/GMT±N` timezones are flagged**: their sign is inverted
+  (`Etc/GMT+1` is UTC−01:00), so they are usually a mistake for CET. They are
+  honoured as configured, with a `WARNING`.
 - **Hand-made refresh tasks are not modified by default.** When one covers the
   same engines it is reported as a `WARNING`, because the engines would then be
   refreshed twice.
 - **`--disable-overlapping`** suspends those hand-made tasks' schedules — but
-  only for tasks whose engines are *all* in the fp task, so no engine ever
+  only for tasks whose engines are *all* in fp tasks, so no engine ever
   stops being refreshed. Tasks that also cover other engines are left running
   and reported. Suspending (not deleting) is reversible from the Management
   Client (Tasks → right-click the schedule → Continue) or the API. If the SMC
   refuses a task (e.g. "Reference to Trash element"), that task is reported as
   `ERROR ... still running`, the others are still processed, and the exit code
   is 1.
-- The start time is 04:30 in `--timezone` (default `UTC`, which also avoids
-  any DST shift); the SMC stores the start in UTC. Tasks use policy validation, preserve connections
-  and snapshot creation, and alert on failure.
-- Engines without an installed policy, and master/virtual engines (which need
-  a different task type), are skipped and listed as `skipped:`.
+- Tasks use policy validation, preserve connections and snapshot creation,
+  and alert on failure. Engines without an installed policy, and
+  master/virtual engines (which need a different task type), are skipped and
+  listed as `skipped:`.
+- **Daylight saving:** a schedule is stored as a UTC start plus a 24-hour (or
+  7-day) period, with no timezone. After a DST change a non-UTC engine's
+  refresh can drift by an hour until the command is re-run, which re-anchors
+  every task at the next 04:30 local time. Re-run it after each DST change
+  (or from cron).
 - Always try `--dry-run` first: it reads the SMC and prints the plan without
   changing anything.
 
 ```bash
-# Profile domain, every day at 04:30 UTC
+# Profile domain, every day at 04:30 engine-local time
 fp tasks policies set-refresh --when daily
 
-# Every domain, Sundays at 04:30 UTC — preview, then apply
+# Every domain, Sundays — preview, then apply
 fp tasks policies set-refresh --when weekly --domain all --dry-run
 fp tasks policies set-refresh --when weekly --domain all
 
@@ -466,10 +481,10 @@ fp tasks policies set-refresh --when daily --domain all --disable-overlapping --
 
 | Flag | Description |
 |---|---|
-| `--when {daily,weekly}` | **Required.** `daily` = every 24 h from 04:30 UTC; `weekly` = Sunday 04:30 UTC. |
+| `--when {daily,weekly}` | **Required.** `daily` = every 24 h from 04:30; `weekly` = Sunday 04:30 — engine-local time. |
 | `--domain NAME` | Domain(s): repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
-| `--timezone TZ` | IANA timezone the 04:30 start is read in (default: `UTC`). |
-| `--disable-overlapping` | Suspend (not delete) the schedules of hand-made refresh tasks whose engines are all covered by the fp task. |
+| `--timezone TZ` | Timezone for engines with none (or an invalid one) configured (default: `UTC`). |
+| `--disable-overlapping` | Suspend (not delete) the schedules of hand-made refresh tasks whose engines are all covered by fp tasks. |
 | `--dry-run` | Print the plan without changing the SMC. |
 | `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
 | `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
