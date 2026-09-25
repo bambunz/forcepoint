@@ -102,6 +102,10 @@ fp license --profile widgets-inc
 `fp` prints the active profile and URL at startup so it's always obvious which
 environment/customer you're looking at.
 
+`fp --help` lists every profile found in the config file (name, URL and
+default domain — never the API key), so you can see at a glance which SMCs
+are available to `--profile`.
+
 ## fp logtail
 
 A `tail(1)`-style viewer for NGFW logs. Instead of parsing syslog exports or clicking
@@ -401,11 +405,11 @@ fp changes pending --json | jq -c 'select(.approved_on == "")'
 
 Scheduled-task management. Currently one action:
 `policies set-refresh` — schedule a policy refresh of **every engine** in a
-domain (or every domain), at 03:30.
+domain (or every domain), at 04:30 UTC.
 
 ```
 $ fp tasks policies set-refresh --when weekly --domain all --dry-run
-fp tasks: profile=default url=https://smc.acme.example:8082 domains=all when=weekly first run=Sun 2026-09-27 03:30 CEST (01:30 UTC) [dry run]
+fp tasks: profile=default url=https://smc.acme.example:8082 domains=all when=weekly first run=Sun 2026-09-27 04:30 UTC (04:30 UTC) [dry run]
 Acme-Corp: create task
     engines (3): fw-cluster-1, fw-branch-2, fw-branch-3
     WARNING: existing task 'Refresh Policy' also refreshes 2 of these engines
@@ -414,8 +418,8 @@ Shared Domain: none (no refreshable engines)
 
 | `--when` | Schedule |
 |---|---|
-| `daily` | every 24 hours, starting at the next 03:30 |
-| `weekly` | every Sunday at 03:30 |
+| `daily` | every 24 hours, starting at the next 04:30 UTC |
+| `weekly` | every Sunday at 04:30 UTC |
 
 How it behaves:
 
@@ -427,8 +431,8 @@ How it behaves:
   engines it is reported as a `WARNING`, because the engines would then be
   refreshed twice on overlapping schedules — decide whether to delete the old
   task or keep it.
-- The 03:30 is local time in `--timezone` (default `Europe/Zurich`); the SMC
-  stores the start in UTC. Tasks use policy validation, preserve connections
+- The start time is 04:30 in `--timezone` (default `UTC`, which also avoids
+  any DST shift); the SMC stores the start in UTC. Tasks use policy validation, preserve connections
   and snapshot creation, and alert on failure.
 - Engines without an installed policy, and master/virtual engines (which need
   a different task type), are skipped and listed as `skipped:`.
@@ -436,10 +440,10 @@ How it behaves:
   changing anything.
 
 ```bash
-# Profile domain, every day at 03:30
+# Profile domain, every day at 04:30 UTC
 fp tasks policies set-refresh --when daily
 
-# Every domain, Sundays at 03:30 — preview, then apply
+# Every domain, Sundays at 04:30 UTC — preview, then apply
 fp tasks policies set-refresh --when weekly --domain all --dry-run
 fp tasks policies set-refresh --when weekly --domain all
 ```
@@ -448,9 +452,9 @@ fp tasks policies set-refresh --when weekly --domain all
 
 | Flag | Description |
 |---|---|
-| `--when {daily,weekly}` | **Required.** `daily` = every 24 h from 03:30; `weekly` = Sunday 03:30. |
+| `--when {daily,weekly}` | **Required.** `daily` = every 24 h from 04:30 UTC; `weekly` = Sunday 04:30 UTC. |
 | `--domain NAME` | Domain(s): repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
-| `--timezone TZ` | IANA timezone the 03:30 refers to (default: `Europe/Zurich`). |
+| `--timezone TZ` | IANA timezone the 04:30 start is read in (default: `UTC`). |
 | `--dry-run` | Print the plan without changing the SMC. |
 | `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
 | `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |

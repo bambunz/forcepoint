@@ -21,8 +21,8 @@ warnings.filterwarnings("ignore", message=r".*ssl_version.*", category=FutureWar
 # stacking duplicates, and hand-made refresh tasks are never touched.
 TASK_NAME = "fp - Refresh Policy (all engines)"
 
-RUN_AT = (3, 30)  # 03:30 local time
-DEFAULT_TZ = "Europe/Zurich"
+RUN_AT = (4, 30)  # 04:30 in --timezone
+DEFAULT_TZ = "UTC"
 
 # Engine types a RefreshPolicyTask accepts. Master/virtual engines need
 # RefreshMasterEnginePolicyTask instead, so they are reported and skipped.
@@ -58,17 +58,17 @@ def add_parser(sub):
 
     r = psub.add_parser(
         "set-refresh",
-        help="schedule a policy refresh of every engine, daily or weekly at 03:30",
+        help="schedule a policy refresh of every engine, daily or weekly at 04:30 UTC",
         description="Create or update one refresh-policy task per domain, named "
                     "'%s', covering every engine in the domain, and schedule it "
-                    "daily (every 24 hours from 03:30) or weekly (Sunday 03:30). "
+                    "daily (every 24 hours from 04:30 UTC) or weekly (Sunday 04:30 UTC). "
                     "Re-running replaces that task's schedule and engine list; "
                     "other refresh tasks are left untouched but reported when they "
                     "cover the same engines." % TASK_NAME,
     )
     r.add_argument(
         "--when", required=True, choices=sorted(SCHEDULES),
-        help="daily = every 24 hours starting at 03:30; weekly = Sunday at 03:30",
+        help="daily = every 24 hours starting at 04:30 UTC; weekly = Sunday at 04:30 UTC",
     )
     r.add_argument(
         "--domain", action="append",
@@ -78,8 +78,8 @@ def add_parser(sub):
     )
     r.add_argument(
         "--timezone", default=DEFAULT_TZ,
-        help="IANA timezone the 03:30 refers to (default: %(default)s). The SMC "
-             "stores the start time in UTC",
+        help="IANA timezone the 04:30 start time is read in (default: %(default)s, "
+             "which also sidesteps DST shifts). The SMC stores the start in UTC",
     )
     r.add_argument("--dry-run", action="store_true",
                    help="show what would be created or changed without touching the SMC")
@@ -95,8 +95,8 @@ def add_parser(sub):
 
 
 def next_activation(when, tz, now=None):
-    """First future 03:30 in `tz` (the next Sunday's for weekly), as an aware
-    datetime. Computed in local time so the wall-clock time is right across
+    """First future 04:30 in `tz` (the next Sunday's for weekly), as an aware
+    datetime. Computed in `tz` so a non-UTC wall-clock time stays right across
     DST, then handed to the SMC as UTC."""
     now = (now or datetime.now(timezone.utc)).astimezone(tz)
     start = now.replace(hour=RUN_AT[0], minute=RUN_AT[1], second=0, microsecond=0)
