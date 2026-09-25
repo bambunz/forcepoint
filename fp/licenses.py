@@ -608,6 +608,9 @@ def run(args):
                     "identifying fields." % (PROG, unknown),
                     file=sys.stderr,
                 )
+    elif not errors:
+        print("%s: no %slicenses found" % (PROG, "unassigned " if args.unassigned else ""),
+              file=sys.stderr)
 
     if hidden:
         print(
@@ -617,8 +620,5 @@ def run(args):
             "against their owning domain." % (PROG, hidden),
             file=sys.stderr,
         )
-    elif not errors:
-        print("%s: no %slicenses found" % (PROG, "unassigned " if args.unassigned else ""),
-              file=sys.stderr)
 
     return 1 if errors else 0
