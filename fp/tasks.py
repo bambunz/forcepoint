@@ -81,6 +81,13 @@ def add_parser(sub):
         help="IANA timezone the 04:30 start time is read in (default: %(default)s, "
              "which also sidesteps DST shifts). The SMC stores the start in UTC",
     )
+    r.add_argument(
+        "--disable-overlapping", action="store_true",
+        help="suspend the schedules of other refresh tasks in the same domain whose "
+             "engines are ALL covered by the fp task (suspend, not delete - "
+             "reversible). Tasks that also refresh engines outside the fp task are "
+             "left running and reported",
+    )
     r.add_argument("--dry-run", action="store_true",
                    help="show what would be created or changed without touching the SMC")
     r.add_argument("--profile", default="default", help="config profile/section name (default: %(default)s)")
@@ -126,17 +133,49 @@ def _own_task(domain_href):
     return None
 
 
-def _overlapping_tasks(engine_hrefs, own_href):
-    """Other refresh tasks covering any of these engines - they would refresh
-    the same engines on their own schedule."""
+def _overlapping_tasks(engine_hrefs, own_href, domain_href):
+    """Other refresh tasks owned by this domain that cover any of these
+    engines - they would refresh the same engines on their own schedule.
+
+    `covered` is True only when every engine the task refreshes is also in
+    the fp task; only those are safe to suspend, otherwise an engine would
+    silently stop being refreshed."""
     overlaps = []
     for task in RefreshPolicyTask.objects.all():
         if task.href == own_href:
             continue
-        shared = engine_hrefs & set(task.data.get("resources") or [])
+        if domain_href and task.data.get("admin_domain") not in (None, domain_href):
+            continue  # inherited from another domain - not ours to change
+        resources = set(task.data.get("resources") or [])
+        shared = engine_hrefs & resources
         if shared:
-            overlaps.append({"task": task.name, "engines": len(shared)})
+            overlaps.append({
+                "task": task.name,
+                "engines": len(shared),
+                "covered": resources <= engine_hrefs,
+                "uncovered": len(resources - engine_hrefs),
+                "disabled": 0,
+                "_obj": task,
+            })
     return overlaps
+
+
+def _disable_overlapping(overlaps, dry_run):
+    """Suspend the active schedules of fully covered hand-made tasks. Suspend,
+    not delete: reversible from the Management Client or the API."""
+    for ov in overlaps:
+        if not ov["covered"]:
+            continue
+        # a refusal on one task (the SMC rejects updates to tasks it considers
+        # to reference trashed elements) must not stop the others
+        try:
+            for schedule in ov["_obj"].task_schedule:
+                if schedule.data.get("activated"):
+                    if not dry_run:
+                        schedule.suspend()
+                    ov["disabled"] += 1
+        except SMCException as exc:
+            ov["error"] = " ".join(str(exc).split())
 
 
 def _add_schedule(task, when, activation):
@@ -153,7 +192,7 @@ def _add_schedule(task, when, activation):
     task.make_request(ActionCommandFailed, method="create", resource="task_schedule", json=body)
 
 
-def configure_domain(domain, domain_href, when, activation, dry_run):
+def configure_domain(domain, domain_href, when, activation, dry_run, disable_overlapping=False):
     """Create/update the fp task in the current session domain; return a
     result dict describing what was (or would be) done."""
     from smc.core.engine import Engine
@@ -183,7 +222,7 @@ def configure_domain(domain, domain_href, when, activation, dry_run):
     engine_hrefs = {e.href for e in engines}
 
     task = _own_task(domain_href)
-    result["overlaps"] = _overlapping_tasks(engine_hrefs, task.href if task else None)
+    result["overlaps"] = _overlapping_tasks(engine_hrefs, task.href if task else None, domain_href)
 
     if not engines:
         result["action"] = "none (no refreshable engines)"
@@ -218,6 +257,9 @@ def configure_domain(domain, domain_href, when, activation, dry_run):
 
     if not dry_run:
         _add_schedule(task, when, activation)
+    # only once the fp task and its schedule are in place
+    if disable_overlapping:
+        _disable_overlapping(result["overlaps"], dry_run)
     return result
 
 
@@ -280,7 +322,8 @@ def run_set_refresh(args):
             try:
                 session.switch_domain(domain)
                 results.append(configure_domain(
-                    domain, domain_hrefs.get(domain), args.when, activation, args.dry_run))
+                    domain, domain_hrefs.get(domain), args.when, activation, args.dry_run,
+                    args.disable_overlapping))
             except SMCException as exc:
                 errors.append("%s: %s" % (domain, exc))
     except ConfigError as exc:
@@ -294,7 +337,10 @@ def run_set_refresh(args):
         except Exception:
             pass
 
+    verb = "would suspend" if args.dry_run else "suspended"
     for res in results:
+        for ov in res["overlaps"]:
+            ov.pop("_obj", None)  # SMC element, not serialisable/printable
         if args.json:
             print(json.dumps(res, separators=(",", ":")))
             continue
@@ -304,9 +350,23 @@ def run_set_refresh(args):
         for skipped in res["skipped"]:
             print("    skipped: %s" % skipped)
         for ov in res["overlaps"]:
-            print("    WARNING: existing task %r also refreshes %d of these engines"
-                  % (ov["task"], ov["engines"]))
+            if args.disable_overlapping and ov.get("error"):
+                print("    ERROR: could not suspend existing task %r - still running: %s"
+                      % (ov["task"], ov["error"]))
+            elif args.disable_overlapping and ov["covered"]:
+                if ov["disabled"]:
+                    print("    %s existing task %r (%d schedule(s); all its engines "
+                          "are in the fp task)" % (verb, ov["task"], ov["disabled"]))
+                else:
+                    print("    existing task %r already suspended" % ov["task"])
+            elif args.disable_overlapping:
+                print("    WARNING: existing task %r left running - it also refreshes %d "
+                      "engine(s) not in the fp task" % (ov["task"], ov["uncovered"]))
+            else:
+                print("    WARNING: existing task %r also refreshes %d of these engines "
+                      "(--disable-overlapping to suspend it)" % (ov["task"], ov["engines"]))
 
     for err in errors:
         print("%s: error: %s" % (PROG, err), file=sys.stderr)
-    return 1 if errors else 0
+    failed = any(ov.get("error") for res in results for ov in res["overlaps"])
+    return 1 if errors or failed else 0

@@ -427,10 +427,17 @@ How it behaves:
   Re-running updates that task in place (engine list and schedule) instead of
   adding duplicates, so it is safe to re-run after adding engines or to switch
   between `daily` and `weekly`.
-- **Hand-made refresh tasks are never modified.** When one covers the same
-  engines it is reported as a `WARNING`, because the engines would then be
-  refreshed twice on overlapping schedules — decide whether to delete the old
-  task or keep it.
+- **Hand-made refresh tasks are not modified by default.** When one covers the
+  same engines it is reported as a `WARNING`, because the engines would then be
+  refreshed twice.
+- **`--disable-overlapping`** suspends those hand-made tasks' schedules — but
+  only for tasks whose engines are *all* in the fp task, so no engine ever
+  stops being refreshed. Tasks that also cover other engines are left running
+  and reported. Suspending (not deleting) is reversible from the Management
+  Client (Tasks → right-click the schedule → Continue) or the API. If the SMC
+  refuses a task (e.g. "Reference to Trash element"), that task is reported as
+  `ERROR ... still running`, the others are still processed, and the exit code
+  is 1.
 - The start time is 04:30 in `--timezone` (default `UTC`, which also avoids
   any DST shift); the SMC stores the start in UTC. Tasks use policy validation, preserve connections
   and snapshot creation, and alert on failure.
@@ -446,6 +453,13 @@ fp tasks policies set-refresh --when daily
 # Every domain, Sundays at 04:30 UTC — preview, then apply
 fp tasks policies set-refresh --when weekly --domain all --dry-run
 fp tasks policies set-refresh --when weekly --domain all
+
+# Take over from the hand-made refresh tasks everywhere
+fp tasks policies set-refresh --when daily --domain all --disable-overlapping --dry-run
+fp tasks policies set-refresh --when daily --domain all --disable-overlapping
+
+# Same on another SMC
+fp tasks policies set-refresh --when daily --domain all --disable-overlapping --profile ch
 ```
 
 ### tasks policies set-refresh flags
@@ -455,6 +469,7 @@ fp tasks policies set-refresh --when weekly --domain all
 | `--when {daily,weekly}` | **Required.** `daily` = every 24 h from 04:30 UTC; `weekly` = Sunday 04:30 UTC. |
 | `--domain NAME` | Domain(s): repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
 | `--timezone TZ` | IANA timezone the 04:30 start is read in (default: `UTC`). |
+| `--disable-overlapping` | Suspend (not delete) the schedules of hand-made refresh tasks whose engines are all covered by the fp task. |
 | `--dry-run` | Print the plan without changing the SMC. |
 | `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
 | `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
