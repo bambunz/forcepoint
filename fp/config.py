@@ -12,6 +12,17 @@ class ConfigError(Exception):
     pass
 
 
+def new_parser():
+    """ConfigParser that strips trailing ' # ...' / ' ; ...' comments.
+
+    Plain ConfigParser keeps them as part of the value, so a line like
+    `verify = false   # self-signed` became the CA-bundle path
+    "false   # self-signed" and every login failed. A comment marker only
+    counts after whitespace, so values such as 'p#ss' are unaffected - but a
+    secret containing ' #' must not be written unquoted on one line."""
+    return configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+
+
 @dataclass
 class SMCConfig:
     url: str
@@ -40,7 +51,7 @@ def load_smtp_config(config_path: str = DEFAULT_CONFIG_PATH,
 
     values = {}
     if os.path.isfile(config_path):
-        parser = configparser.ConfigParser()
+        parser = new_parser()
         parser.read(config_path)
         if "smtp" in parser:
             for key in ("host", "port", "starttls", "username", "password", "from", "to"):
@@ -116,7 +127,7 @@ def load_config(profile: str = "default", config_path: str = DEFAULT_CONFIG_PATH
 
     if os.path.isfile(config_path):
         _warn_permissions(config_path)
-        parser = configparser.ConfigParser()
+        parser = new_parser()
         parser.read(config_path)
         section = "smc" if profile in ("default", None) else "smc:%s" % profile
         if profile not in ("default", None) and section not in parser:

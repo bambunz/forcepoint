@@ -3,7 +3,7 @@ import configparser
 import sys
 
 from fp import changes, licenses, logtail, show, tasks
-from fp.config import DEFAULT_CONFIG_PATH
+from fp.config import DEFAULT_CONFIG_PATH, new_parser
 
 
 def _profiles_epilog(config_path=DEFAULT_CONFIG_PATH):
@@ -18,7 +18,7 @@ def _profiles_epilog(config_path=DEFAULT_CONFIG_PATH):
         "    fp tasks policies set-refresh --when daily --domain all --profile ch",
         "",
     ]
-    parser = configparser.ConfigParser()
+    parser = new_parser()
     try:
         parser.read(config_path)
     except configparser.Error:
