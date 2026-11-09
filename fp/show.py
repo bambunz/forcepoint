@@ -215,7 +215,7 @@ def run_domains(args):
     if config.verify is False:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    print("%s: profile=%s url=%s" % (PROG, args.profile, config.url), file=sys.stderr)
+    print("%s: profile=%s url=%s" % (PROG, config.display(args.profile), config.url), file=sys.stderr)
 
     try:
         session.login(
@@ -564,7 +564,7 @@ def run_ldap(args):
     requested = normalize_domains(args.domain)
     print(
         "%s: profile=%s url=%s domains=%s"
-        % (PROG, args.profile, config.url, ",".join(requested) if requested else ALL),
+        % (PROG, config.display(args.profile), config.url, ",".join(requested) if requested else ALL),
         file=sys.stderr,
     )
 
@@ -721,7 +721,7 @@ def run_version(args):
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     if args.smc:
-        print("%s: url=%s" % (PROG, config.url), file=sys.stderr)
+        print("%s: profile=%s url=%s" % (PROG, config.display(args.profile), config.url), file=sys.stderr)
         try:
             info = collect_smc_version(config)
         except SMCException as exc:
@@ -746,7 +746,7 @@ def run_version(args):
     requested = normalize_domains(args.domain)
     domains_label = ",".join(requested) if requested else (config.domain or ALL)
     print(
-        "%s: profile=%s url=%s domains=%s" % (PROG, args.profile, config.url, domains_label),
+        "%s: profile=%s url=%s domains=%s" % (PROG, config.display(args.profile), config.url, domains_label),
         file=sys.stderr,
     )
 
@@ -806,7 +806,7 @@ def run_metrics(args):
     requested = normalize_domains(args.domain)
     domains_label = ",".join(requested) if requested else (config.domain or "all")
     print(
-        "%s: profile=%s url=%s domains=%s" % (PROG, args.profile, config.url, domains_label),
+        "%s: profile=%s url=%s domains=%s" % (PROG, config.display(args.profile), config.url, domains_label),
         file=sys.stderr,
     )
 

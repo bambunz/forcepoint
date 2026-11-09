@@ -167,7 +167,7 @@ def run_pending(args):
     requested = show.normalize_domains(args.domain)
     domains_label = ",".join(requested) if requested else (config.domain or "all")
     print(
-        "%s: profile=%s url=%s domains=%s" % (PROG, args.profile, config.url, domains_label),
+        "%s: profile=%s url=%s domains=%s" % (PROG, config.display(args.profile), config.url, domains_label),
         file=sys.stderr,
     )
 

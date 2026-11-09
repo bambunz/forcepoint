@@ -31,6 +31,11 @@ class SMCConfig:
     verify: Union[bool, str] = True
     api_version: Optional[str] = None
     timeout: int = 10
+    name: Optional[str] = None  # display name, e.g. "SMC Aruba" (config 'name =')
+
+    def display(self, profile):
+        """'default (SMC Aruba)' when the profile has a display name, else 'default'."""
+        return "%s (%s)" % (profile, self.name) if self.name else profile
 
 
 @dataclass
@@ -133,7 +138,7 @@ def load_config(profile: str = "default", config_path: str = DEFAULT_CONFIG_PATH
         if profile not in ("default", None) and section not in parser:
             raise ConfigError("no [%s] section in %s" % (section, config_path))
         if section in parser:
-            for key in ("url", "api_key", "verify", "domain", "api_version", "timeout"):
+            for key in ("url", "api_key", "verify", "domain", "api_version", "timeout", "name"):
                 if key in parser[section] and key not in values:
                     values[key] = parser[section][key]
 
@@ -164,4 +169,5 @@ def load_config(profile: str = "default", config_path: str = DEFAULT_CONFIG_PATH
         verify=verify,
         api_version=values.get("api_version"),
         timeout=int(values.get("timeout", 10)),
+        name=(values.get("name") or "").strip() or None,
     )

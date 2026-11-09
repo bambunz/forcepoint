@@ -82,6 +82,7 @@ domain:
 
 ```ini
 [smc:acme]
+name = SMC Acme
 url = https://smc.acme.example:8082
 api_key = acme-api-key
 domain = Acme-Corp
@@ -102,9 +103,14 @@ fp license --profile widgets-inc
 `fp` prints the active profile and URL at startup so it's always obvious which
 environment/customer you're looking at.
 
-`fp --help` lists every profile found in the config file (name, URL and
-default domain — never the API key), so you can see at a glance which SMCs
-are available to `--profile`.
+The optional `name =` line is a display name: it is shown next to the profile
+in `fp --help` and in every command's startup line, e.g.
+`fp license: profile=acme (SMC Acme) url=...`. `--profile` still takes the
+section name (`acme`).
+
+`fp --help` lists every profile found in the config file (profile, display
+name, URL and default domain — never the API key), so you can see at a glance
+which SMCs are available to `--profile`.
 
 ## fp logtail
 

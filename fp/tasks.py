@@ -351,7 +351,7 @@ def run_set_refresh(args):
     print(
         "%s: profile=%s url=%s domains=%s when=%s at 04:30 engine-local time "
         "(engines without a timezone: %s)%s"
-        % (PROG, args.profile, config.url,
+        % (PROG, config.display(args.profile), config.url,
            ",".join(requested) if requested else (config.domain or show.ALL),
            args.when, args.timezone, " [dry run]" if args.dry_run else ""),
         file=sys.stderr,

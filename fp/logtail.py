@@ -256,7 +256,7 @@ def run(args):
         return 2
 
     print(
-        "%s: profile=%s domain=%s url=%s" % (PROG, args.profile, config.domain, config.url),
+        "%s: profile=%s domain=%s url=%s" % (PROG, config.display(args.profile), config.domain, config.url),
         file=sys.stderr,
     )
 
