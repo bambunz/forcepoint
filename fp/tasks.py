@@ -1,8 +1,12 @@
+import html
 import json
+import re
+import smtplib
 import sys
 import warnings
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import urllib3
@@ -11,7 +15,9 @@ from smc.administration.scheduled_tasks import RefreshPolicyTask
 from smc.api.exceptions import ActionCommandFailed, SMCException
 
 from fp import show
-from fp.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from fp.config import (DEFAULT_CONFIG_PATH, ConfigError, load_config, load_smtp_config,
+                       new_parser)
+from fp.output import table_lines
 
 PROG = "fp tasks"
 
@@ -34,6 +40,10 @@ REFRESHABLE_TYPES = {"single_fw", "fw_cluster", "single_layer2", "layer2_cluster
                      "single_ips", "ips_cluster"}
 
 SUNDAY_MASK = 2  # day masks: sun=2 mon=4 tue=8 wed=16 thu=32 fri=64 sat=128
+
+# `status`: a daily refresh means every engine should have had an upload within
+# the last day; the margin covers a run that takes a while or a late check.
+DEFAULT_MAX_AGE_HOURS = 26
 
 # How the SMC itself stores these schedules (read back from tasks created in
 # the Management Client). Note smc-python's add_schedule() is not used: for
@@ -113,6 +123,46 @@ def add_parser(sub):
     r.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
     r.add_argument("--json", action="store_true", help="emit one JSON object per domain instead of text")
     r.set_defaults(func=run_set_refresh)
+
+    st = psub.add_parser(
+        "status",
+        help="last policy upload result of every engine; optionally email the failures",
+        description="Report the most recent policy upload of every engine - from the "
+                    "refresh tasks or a manual install - read from the engine's upload "
+                    "history. An engine is a problem when its last upload failed (the "
+                    "SMC's reason is shown) or when it has not had an upload for "
+                    "--max-age hours (the refresh task did not run). With --email the "
+                    "problems are mailed via the [smtp] section of the config file; "
+                    "nothing is sent when every engine is fine. Meant for crontab, "
+                    "after the last refresh of the day.",
+    )
+    st.add_argument(
+        "--domain", action="append",
+        help="administrative domain(s), repeatable or comma-separated; 'all' = every "
+             "domain visible to the API key. Default: the profile's domain, or all "
+             "domains if the profile has none",
+    )
+    st.add_argument(
+        "--profile", action="append",
+        help="config profile(s), repeatable or comma-separated; 'all' = every SMC in "
+             "the config file (default: default)",
+    )
+    st.add_argument(
+        "--max-age", type=int, default=DEFAULT_MAX_AGE_HOURS, metavar="HOURS",
+        help="flag engines whose last upload is older than this (default: %(default)s; "
+             "0 disables the check)",
+    )
+    st.add_argument("--problems", action="store_true",
+                    help="list only engines that failed or are stale")
+    st.add_argument("--email", action="store_true",
+                    help="email the problems (sends nothing when there are none)")
+    st.add_argument("--dry-run", action="store_true",
+                    help="with --email: print the email instead of sending it")
+    st.add_argument("--to", action="append", help="recipient address (repeatable; overrides config 'to =')")
+    st.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="path to config file (default: %(default)s)")
+    st.add_argument("--insecure", action="store_true", help="disable TLS certificate verification (dangerous)")
+    st.add_argument("--json", action="store_true", help="emit one JSON object per engine instead of a table")
+    st.set_defaults(func=run_status)
     return p
 
 
@@ -461,3 +511,299 @@ def run_set_refresh(args):
         print("%s: error: %s" % (PROG, err), file=sys.stderr)
     failed = any(ov.get("error") for res in results for ov in res["overlaps"])
     return 1 if errors or failed else 0
+
+
+# ---------------------------------------------------------------------------
+# tasks policies status
+# ---------------------------------------------------------------------------
+
+STATUS_COLUMNS = [
+    ("smc", "SMC"),
+    ("domain", "Domain"),
+    ("engine", "Engine"),
+    ("status", "Status"),
+    ("last_upload", "Last Upload (UTC)"),
+    ("last_success", "Last Success (UTC)"),
+    ("failed_in_row", "Fails"),
+    ("reason", "Reason"),
+]
+
+# upload_result entries are named "2026-11-12 04:30:03 - Fail" (UTC)
+_UPLOAD_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) - (\w+)$")
+
+
+def _profiles(requested, config_path):
+    """Profile names to check: 'all' = every [smc] / [smc:NAME] section."""
+    names = []
+    for item in requested or ["default"]:
+        names.extend(p.strip() for p in item.split(",") if p.strip())
+    if "all" not in names:
+        return list(OrderedDict.fromkeys(names))
+    parser = new_parser()
+    parser.read(config_path)
+    found = []
+    for section in parser.sections():
+        if section == "smc":
+            found.append("default")
+        elif section.startswith("smc:"):
+            found.append(section[4:])
+    return found
+
+
+def _upload_history(engine):
+    """[(datetime UTC, 'Success'|'Fail', href)] newest first, plus the newest
+    entry's detail.
+
+    Entry names carry the SMC server's local time (UTC on one SMC, CET on
+    another), so the newest entry's real creation_time gives the offset that
+    is applied to all of them."""
+    s = session.session
+    link = next((l["href"] for l in engine.data.get("link", []) if l.get("rel") == "upload_result"), None)
+    if not link:
+        return [], {}
+    items = s.get(link, verify=s.verify).json().get("result", [])
+    history = []
+    for item in items:
+        m = _UPLOAD_NAME.match(item.get("name", ""))
+        if m:
+            when = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            history.append((when, m.group(2), item["href"]))
+    if not history:
+        return [], {}
+    history.sort(key=lambda h: h[0], reverse=True)
+    detail = s.get(history[0][2], verify=s.verify).json()
+    try:
+        created = datetime.strptime(detail["creation_time"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        # server offsets are whole quarter hours; rounding absorbs the
+        # second or so between the name and the creation time
+        offset = timedelta(minutes=round((history[0][0] - created).total_seconds() / 900) * 15)
+    except (KeyError, ValueError):
+        offset = timedelta(0)
+    return [(when - offset, result, href) for when, result, href in history], detail
+
+
+def _clean(msg):
+    text = re.sub(r"<[^>]+>", " ", html.unescape(msg or ""))
+    return " ".join(text.split())
+
+
+def _failure_reason(detail):
+    """The SMC's ERROR/WARNING messages for one failed upload, minus the
+    generic 'Failed to start policy upload' line."""
+    s = session.session
+    try:
+        content = next((l["href"] for l in detail.get("link", []) if l.get("rel") == "content"), None)
+        if not content:
+            return _clean(detail.get("info")) or "no detail recorded"
+        messages = s.get(content, verify=s.verify).json()
+    except (ValueError, KeyError, OSError) as exc:
+        return "could not read upload result: %s" % exc
+    if not isinstance(messages, list):
+        return _clean(str(messages))[:300]
+    keep = [m for m in messages if m.get("severity") in ("ERROR", "WARNING")]
+    specific = [m for m in keep if "Failed to start policy upload" not in (m.get("msg") or "")]
+    chosen = specific or keep
+    return " | ".join("%s: %s" % (m["severity"], _clean(m.get("msg"))) for m in chosen) or "no detail recorded"
+
+
+def engine_status(engine, max_age, now):
+    """Status dict for one engine from its policy upload history."""
+    history, detail = _upload_history(engine)
+    row = {"engine": engine.name, "status": "ok", "last_upload": "", "last_success": "never",
+           "failed_in_row": "0", "reason": ""}
+    if not history:
+        row.update(status="NO HISTORY", reason="no policy upload recorded")
+        return row
+    last_when, last_result, _ = history[0]
+    row["last_upload"] = "%s %s" % (last_when.strftime("%Y-%m-%d %H:%M"), last_result)
+    success = next((h for h in history if h[1] == "Success"), None)
+    if success:
+        row["last_success"] = success[0].strftime("%Y-%m-%d %H:%M")
+    fails = 0
+    for _, result, _ in history:
+        if result == "Success":
+            break
+        fails += 1
+    # the history holds the last ~50 uploads; all failed means "at least"
+    row["failed_in_row"] = "%d%s" % (fails, "+" if fails == len(history) and not success else "")
+    # stale = no attempt at all for a while: the refresh task is not running,
+    # typically because it is stuck on an upload to an unreachable engine
+    # (such an upload never ends, so the task skips every later schedule)
+    age_h = int((now - last_when).total_seconds() // 3600)
+    stale = "no upload attempt for %d hours - refresh task not running or stuck" % age_h \
+        if max_age and age_h > max_age else ""
+    if last_result != "Success":
+        row["status"] = "FAILED+STALE" if stale else "FAILED"
+        reason = _clean(detail.get("info")) if "aborted" in (detail.get("info") or "") \
+            else _failure_reason(detail)
+        row["reason"] = "; ".join(x for x in (stale, reason) if x)
+    elif stale:
+        row["status"] = "STALE"
+        row["reason"] = stale
+    if row["status"] != "ok":
+        down = _unreachable_nodes(engine)
+        if down:
+            row["reason"] = "%s; %s" % (down, row["reason"])
+    return row
+
+
+def _unreachable_nodes(engine):
+    """'node 1 Unknown' style note for nodes the SMC cannot reach, or ''."""
+    notes = []
+    try:
+        for node in engine.nodes:
+            state = getattr(node.status(), "engine_node_status", None) or "?"
+            if state not in ("Online", "Standby", "Offline"):
+                notes.append("%s %s" % (node.name, state))
+    except SMCException:
+        return ""
+    return ("UNREACHABLE: " + ", ".join(notes)) if notes else ""
+
+
+def collect_status(config, profile_label, requested_domains, max_age):
+    """Status rows for every refreshable engine in the selected domains of one SMC."""
+    from smc.core.engine import Engine
+
+    rows, errors, skipped = [], [], 0
+    now = datetime.now(timezone.utc)
+    session.login(
+        url=config.url,
+        api_key=config.api_key,
+        verify=config.verify,
+        domain=show.initial_login_domain(requested_domains, config),
+        api_version=config.api_version,
+        timeout=config.timeout,
+    )
+    try:
+        domain_hrefs = {name: href for href, name in show._domain_name_map().items()}
+        for domain in show.select_domains(requested_domains, config, PROG):
+            try:
+                session.switch_domain(domain)
+                href = domain_hrefs.get(domain)
+                for engine in Engine.objects.all():
+                    owner = engine.data.get("admin_domain")
+                    if href and owner and owner != href:
+                        continue  # inherited from another domain
+                    if engine.type not in REFRESHABLE_TYPES:
+                        skipped += 1
+                        continue
+                    try:
+                        if not engine.installed_policy:
+                            skipped += 1
+                            continue
+                    except SMCException:
+                        skipped += 1
+                        continue
+                    row = engine_status(engine, max_age, now)
+                    row.update(smc=profile_label, domain=domain)
+                    rows.append(row)
+            except SMCException as exc:
+                errors.append("%s / %s: %s" % (profile_label, domain, exc))
+    finally:
+        try:
+            session.logout()
+        except Exception:
+            pass
+    return rows, errors, skipped
+
+
+def build_status_email(smtp_cfg, problems, checked, urls):
+    subject = "[fp] %d Forcepoint engine(s) with failed or missing policy refresh" % len(problems)
+    intro = ("%d of %d engines did not get their policy refreshed (SMC: %s). "
+             "Reason is the SMC's own upload result; fix the policy or the engine "
+             "and the next scheduled refresh will retry."
+             % (len(problems), checked, ", ".join(urls)))
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = smtp_cfg.sender
+    msg["To"] = ", ".join(smtp_cfg.to)
+    msg.set_content(intro + "\n\n" + "\n".join(table_lines(problems, STATUS_COLUMNS))
+                    + "\n\n-- \nfp tasks policies status\n")
+    header = "".join("<th align=\"left\">%s</th>" % html.escape(h) for _, h in STATUS_COLUMNS)
+    cells = "".join(
+        "<tr>%s</tr>" % "".join("<td>%s</td>" % html.escape(r.get(k, "")) for k, _ in STATUS_COLUMNS)
+        for r in problems
+    )
+    msg.add_alternative(
+        "<p>%s</p><table border=\"1\" cellpadding=\"4\" cellspacing=\"0\">"
+        "<tr>%s</tr>%s</table><p>-- <br>fp tasks policies status</p>"
+        % (html.escape(intro), header, cells),
+        subtype="html",
+    )
+    return msg
+
+
+def run_status(args):
+    from fp.licenses import send_email
+
+    smtp_cfg = None
+    if args.email:
+        try:
+            smtp_cfg = load_smtp_config(config_path=args.config, cli_overrides={"to": args.to})
+        except ConfigError as exc:
+            print("%s: %s" % (PROG, exc), file=sys.stderr)
+            return 2
+
+    rows, errors, skipped, urls = [], [], 0, []
+    for profile in _profiles(args.profile, args.config):
+        try:
+            config = load_config(
+                profile=profile,
+                config_path=args.config,
+                cli_overrides={"verify": False if args.insecure else None},
+                require_domain=False,
+            )
+        except ConfigError as exc:
+            errors.append("%s: %s" % (profile, exc))
+            continue
+        if config.verify is False:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        label = config.name or profile
+        urls.append("%s %s" % (label, config.url))
+        print("%s: profile=%s url=%s domains=%s"
+              % (PROG, config.display(profile), config.url,
+                 ",".join(show.normalize_domains(args.domain)) or config.domain or show.ALL),
+              file=sys.stderr)
+        try:
+            got, errs, skip = collect_status(config, label, args.domain, args.max_age)
+        except ConfigError as exc:
+            errors.append("%s: %s" % (profile, exc))
+            continue
+        except SMCException as exc:
+            errors.append("%s: could not log in to %s: %s" % (profile, config.url, exc))
+            continue
+        except KeyboardInterrupt:
+            return 130
+        rows.extend(got)
+        errors.extend(errs)
+        skipped += skip
+
+    problems = [r for r in rows if r["status"] != "ok"]
+    shown = problems if args.problems else rows
+    if args.json:
+        for r in shown:
+            print(json.dumps(r, separators=(",", ":")))
+    elif shown:
+        print("\n".join(table_lines(shown, STATUS_COLUMNS)))
+    print("%s: %d engine(s) checked, %d problem(s); %d skipped (no policy installed or "
+          "not refreshable)" % (PROG, len(rows), len(problems), skipped), file=sys.stderr)
+    for err in errors:
+        print("%s: error: %s" % (PROG, err), file=sys.stderr)
+
+    if args.email:
+        if not problems:
+            print("%s: no problems - no email sent" % PROG, file=sys.stderr)
+        else:
+            msg = build_status_email(smtp_cfg, problems, len(rows), urls)
+            if args.dry_run:
+                print(msg)
+            else:
+                try:
+                    send_email(smtp_cfg, msg)
+                except (smtplib.SMTPException, OSError) as exc:
+                    print("%s: sending mail via %s:%s failed: %s"
+                          % (PROG, smtp_cfg.host, smtp_cfg.port, exc), file=sys.stderr)
+                    return 1
+                print("%s: emailed %d problem(s) to %s"
+                      % (PROG, len(problems), ", ".join(smtp_cfg.to)), file=sys.stderr)
+    return 1 if errors else 0

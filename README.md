@@ -509,6 +509,54 @@ fp tasks policies set-refresh --when daily --domain all --disable-overlapping --
 | `--insecure` | Disable TLS certificate verification. Only for lab/self-signed setups. |
 | `--json` | Emit one JSON object per domain instead of text. |
 
+### tasks policies status
+
+`policies status` reads every engine's policy upload history (the SMC keeps
+the last ~50 uploads per engine, from refresh tasks and manual installs) and
+reports the most recent one. An engine is a **problem** when:
+
+- **FAILED** — its last upload failed. The reason is the SMC's own upload
+  result (the validation error/warning, a license error, or `Policy upload
+  aborted.`). `Fails` counts consecutive failures (`48+` = every upload in the
+  history failed).
+- **STALE** — no upload attempt for `--max-age` hours (default 26): the refresh
+  task did not run. Combined with a failure it shows as `FAILED+STALE`.
+- **UNREACHABLE: <node> Unknown** is prepended when the SMC cannot reach a
+  node. An upload to an unreachable engine never finishes, so the refresh task
+  stays "running" and skips every later schedule — the other engines of the
+  same task then go STALE.
+
+Upload history entries are named in the SMC server's local time; fp converts
+them to UTC from each entry's creation time.
+
+With `--email` the problems are mailed through the `[smtp]` section (same as
+`fp license cron`); nothing is sent when every engine is fine.
+
+```bash
+# Every engine on every configured SMC
+fp tasks policies status --profile all --domain all
+
+# Only the problems
+fp tasks policies status --profile all --domain all --problems
+
+# Preview the email, then install the daily check (after the last refresh)
+fp tasks policies status --profile all --domain all --email --dry-run
+0 13 * * * /home/ale/forcepoint/bin/fp tasks policies status --profile all --domain all --email >> /home/ale/.forcepoint/policy-status.log 2>&1
+```
+
+| Flag | Description |
+|---|---|
+| `--profile NAME` | Profile(s): repeatable or comma-separated; `all` = every SMC in the config (default: `default`). |
+| `--domain NAME` | Domain(s): repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
+| `--max-age HOURS` | Flag engines with no upload attempt for this long (default: 26; `0` disables). |
+| `--problems` | List only failed/stale engines. |
+| `--email` | Email the problems (nothing sent when there are none). |
+| `--dry-run` | With `--email`: print the email instead of sending it. |
+| `--to ADDR` | Recipient (repeatable; overrides config `to =`). |
+| `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |
+| `--insecure` | Disable TLS certificate verification. |
+| `--json` | One JSON object per engine instead of a table. |
+
 ## fp show
 
 Read-only views of SMC state. Subcommands: `domains` and `metrics`.
