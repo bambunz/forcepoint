@@ -455,8 +455,16 @@ How it behaves:
   refuses a task (e.g. "Reference to Trash element"), that task is reported as
   `ERROR ... still running`, the others are still processed, and the exit code
   is 1.
-- Tasks use policy validation, preserve connections and snapshot creation,
-  and alert on failure. Engines without an installed policy, and
+- Tasks preserve connections, create a snapshot and alert on failure.
+  **Policy validation is off by default**: an unattended task aborts the
+  upload on any validation *warning* ("Failed to start policy upload. Issues
+  have been detected before the upload."), which an admin installing from the
+  Management Client simply clicks through. With validation on, an engine whose
+  policy has a harmless warning is silently never refreshed. Validation
+  *errors* (e.g. a license too old for the engine version) still block the
+  upload either way. `--validate` turns it on; the SMC cannot change this on
+  an existing task, so switching it recreates the fp tasks (shown as
+  `recreate (policy validation on|off)`). Engines without an installed policy, and
   master/virtual engines (which need a different task type), are skipped and
   listed as `skipped:`.
 - **Daylight saving:** a schedule is stored as a UTC start plus a 24-hour (or
@@ -491,6 +499,7 @@ fp tasks policies set-refresh --when daily --domain all --disable-overlapping --
 | `--domain NAME` | Domain(s): repeatable or comma-separated; `all` = every visible domain. Default: profile domain, or all domains if the profile has none. |
 | `--timezone TZ` | Timezone for engines with none (or an invalid one) configured (default: `UTC`). |
 | `--disable-overlapping` | Suspend (not delete) the schedules of hand-made refresh tasks whose engines are all covered by fp tasks. |
+| `--validate` | Validate the policy before each refresh (default: off — any validation warning aborts an unattended refresh). Changing it recreates existing fp tasks. |
 | `--dry-run` | Print the plan without changing the SMC. |
 | `--profile NAME` | Config profile/section to use (default: `default`, i.e. `[smc]`). |
 | `--config PATH` | Path to config file (default: `~/.forcepoint/forcepoint.conf`). |

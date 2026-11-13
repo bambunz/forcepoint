@@ -95,6 +95,14 @@ def add_parser(sub):
              "reversible). Tasks that also refresh engines outside the fp tasks are "
              "left running and reported",
     )
+    r.add_argument(
+        "--validate", action="store_true",
+        help="validate the policy before each refresh. Off by default: an unattended "
+             "task aborts the upload on any validation WARNING (which the Management "
+             "Client lets an admin click through), so an engine with a harmless warning "
+             "would silently never be refreshed. Errors still block the upload either "
+             "way. Changing this on an existing fp task recreates the task",
+    )
     r.add_argument("--dry-run", action="store_true",
                    help="show what would be created or changed without touching the SMC")
     r.add_argument("--profile", default="default", help="config profile/section name (default: %(default)s)")
@@ -229,20 +237,34 @@ def _add_schedule(task, name, when, activation):
     task.make_request(ActionCommandFailed, method="create", resource="task_schedule", json=body)
 
 
-def _sync_task(task, name, engines, when, activation, dry_run):
+def _validates(task):
+    """True when the task validates the policy before uploading. smc-python
+    only sends validation_settings at creation, so the setting cannot be
+    changed on an existing task - it has to be recreated."""
+    return bool(task.data.get("validation_settings"))
+
+
+def _sync_task(task, name, engines, when, activation, dry_run, validate=False):
     """Create or update one fp task; return a description of the change."""
     engine_hrefs = {e.href for e in engines}
+    recreated = task is not None and _validates(task) != validate
+    if recreated:
+        if not dry_run:
+            task.delete()
+        task = None
     if task is None:
         if not dry_run:
             task = RefreshPolicyTask.create(
                 name=name,
                 engines=engines,
                 comment="Refresh policy at 04:30 local engine time - managed by fp",
-                validate_policy=True,
+                validate_policy=validate,
                 preserve_connections=True,
                 snapshot_creation=True,
             )
             _add_schedule(task, name, when, activation)
+        if recreated:
+            return "recreate (policy validation %s)" % ("on" if validate else "off")
         return "create"
 
     changes = []
@@ -259,7 +281,8 @@ def _sync_task(task, name, engines, when, activation, dry_run):
     return "update: " + ", ".join(changes)
 
 
-def configure_domain(domain, domain_href, when, fallback_tz, dry_run, disable_overlapping=False):
+def configure_domain(domain, domain_href, when, fallback_tz, dry_run, disable_overlapping=False,
+                     validate=False):
     """Create/update one fp task per engine timezone in the current session
     domain; return a result dict describing what was (or would be) done."""
     from smc.core.engine import Engine
@@ -296,7 +319,8 @@ def configure_domain(domain, domain_href, when, fallback_tz, dry_run, disable_ov
         all_engine_hrefs.update(e.href for e in engines)
         name = task_name(tz_name)
         activation = next_activation(when, ZoneInfo(tz_name))
-        action = _sync_task(existing.pop(name, None), name, engines, when, activation, dry_run)
+        action = _sync_task(existing.pop(name, None), name, engines, when, activation, dry_run,
+                            validate)
         result["groups"].append({
             "timezone": tz_name,
             "task": name,
@@ -350,10 +374,11 @@ def run_set_refresh(args):
     requested = show.normalize_domains(args.domain)
     print(
         "%s: profile=%s url=%s domains=%s when=%s at 04:30 engine-local time "
-        "(engines without a timezone: %s)%s"
+        "(engines without a timezone: %s) policy validation=%s%s"
         % (PROG, config.display(args.profile), config.url,
            ",".join(requested) if requested else (config.domain or show.ALL),
-           args.when, args.timezone, " [dry run]" if args.dry_run else ""),
+           args.when, args.timezone, "on" if args.validate else "off",
+           " [dry run]" if args.dry_run else ""),
         file=sys.stderr,
     )
 
@@ -379,7 +404,7 @@ def run_set_refresh(args):
                 session.switch_domain(domain)
                 results.append(configure_domain(
                     domain, domain_hrefs.get(domain), args.when, args.timezone,
-                    args.dry_run, args.disable_overlapping))
+                    args.dry_run, args.disable_overlapping, args.validate))
             except SMCException as exc:
                 errors.append("%s: %s" % (domain, exc))
     except ConfigError as exc:
