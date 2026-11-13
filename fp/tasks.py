@@ -25,9 +25,12 @@ PROG = "fp tasks"
 warnings.filterwarnings("ignore", message=r".*ssl_version.*", category=FutureWarning)
 
 # fp owns every refresh task whose name starts with this prefix: one per
-# (domain, engine timezone), e.g. "fp - Refresh Policy (Europe/Rome)".
-# Re-running updates them in place; fp tasks that no longer match a timezone
-# group (including the earlier per-domain "(all engines)" task) are removed.
+# engine, e.g. "fp - Refresh Policy: FWBOISCH". One task per engine because
+# an upload to an unreachable engine never finishes: the task stays running
+# and the SMC skips its later schedules, so a shared task would stop
+# refreshing every other engine in it too.
+# Re-running updates them in place; fp tasks that no longer match an engine
+# (including the earlier per-domain and per-timezone tasks) are removed.
 # Hand-made refresh tasks are never modified unless --disable-overlapping.
 TASK_PREFIX = "fp - Refresh Policy"
 
@@ -76,9 +79,11 @@ def add_parser(sub):
         description="Schedule a policy refresh of every engine, daily (every 24 hours) "
                     "or weekly (Sunday), at 04:30 in each engine's own configured "
                     "timezone - engines without one use --timezone (default UTC). "
-                    "Creates one task per domain and timezone, named '%s (<timezone>)'. "
+                    "Creates one task per engine, named '%s: <engine>', so an "
+                    "unreachable engine (whose upload never finishes and keeps its task "
+                    "running) cannot stop the others from being refreshed. "
                     "Re-running updates those tasks in place and removes fp tasks that "
-                    "no longer match a timezone group; other refresh tasks are left "
+                    "no longer match an engine; other refresh tasks are left "
                     "untouched (unless --disable-overlapping) but reported when they "
                     "cover the same engines." % TASK_PREFIX,
     )
@@ -210,8 +215,8 @@ def engine_timezone(engine, fallback):
     return raw, None
 
 
-def task_name(tz_name):
-    return "%s (%s)" % (TASK_PREFIX, tz_name)
+def task_name(engine_name):
+    return "%s: %s" % (TASK_PREFIX, engine_name)
 
 
 def _fp_tasks(domain_href):
@@ -333,14 +338,14 @@ def _sync_task(task, name, engines, when, activation, dry_run, validate=False):
 
 def configure_domain(domain, domain_href, when, fallback_tz, dry_run, disable_overlapping=False,
                      validate=False):
-    """Create/update one fp task per engine timezone in the current session
-    domain; return a result dict describing what was (or would be) done."""
+    """Create/update one fp task per engine in the current session domain;
+    return a result dict describing what was (or would be) done."""
     from smc.core.engine import Engine
 
     result = {"domain": domain, "groups": [], "removed": [], "skipped": [],
               "warnings": [], "overlaps": []}
 
-    groups = OrderedDict()  # timezone -> [engines]
+    targets = []  # (engine, timezone)
     for engine in Engine.objects.all():
         # engines inherited from another domain are that domain's business
         owner = engine.data.get("admin_domain")
@@ -359,29 +364,28 @@ def configure_domain(domain, domain_href, when, fallback_tz, dry_run, disable_ov
         tz_name, warning = engine_timezone(engine, fallback_tz)
         if warning:
             result["warnings"].append(warning)
-        groups.setdefault(tz_name, []).append(engine)
+        targets.append((engine, tz_name))
 
     existing = _fp_tasks(domain_href)
     all_engine_hrefs = set()
 
-    for tz_name in sorted(groups):
-        engines = sorted(groups[tz_name], key=lambda e: e.name.lower())
-        all_engine_hrefs.update(e.href for e in engines)
-        name = task_name(tz_name)
+    for engine, tz_name in sorted(targets, key=lambda t: t[0].name.lower()):
+        all_engine_hrefs.add(engine.href)
+        name = task_name(engine.name)
         activation = next_activation(when, ZoneInfo(tz_name))
-        action = _sync_task(existing.pop(name, None), name, engines, when, activation, dry_run,
+        action = _sync_task(existing.pop(name, None), name, [engine], when, activation, dry_run,
                             validate)
         result["groups"].append({
             "timezone": tz_name,
             "task": name,
             "action": action,
-            "engines": [e.name for e in engines],
+            "engines": [engine.name],
             "first_run_local": activation.strftime("%a %Y-%m-%d %H:%M %Z"),
             "first_run_utc": activation.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M"),
         })
 
-    # fp tasks whose timezone group is gone (engine moved/retimezoned, or the
-    # earlier one-task-per-domain layout): ours to remove
+    # fp tasks that no longer match an engine (engine removed or renamed, or
+    # the earlier per-domain / per-timezone layouts): ours to remove
     for name, task in sorted(existing.items()):
         if not dry_run:
             task.delete()
@@ -390,7 +394,7 @@ def configure_domain(domain, domain_href, when, fallback_tz, dry_run, disable_ov
     fp_hrefs = {t.href for t in _fp_tasks(domain_href).values()} if not dry_run else set()
     result["overlaps"] = _overlapping_tasks(all_engine_hrefs, fp_hrefs, domain_href)
     # only once the fp tasks and their schedules are in place
-    if disable_overlapping and groups:
+    if disable_overlapping and targets:
         _disable_overlapping(result["overlaps"], dry_run)
     return result
 
@@ -483,7 +487,6 @@ def run_set_refresh(args):
         for grp in res["groups"]:
             print("    %s %r - first run %s (%s UTC)"
                   % (grp["action"], grp["task"], grp["first_run_local"], grp["first_run_utc"][11:]))
-            print("        engines (%d): %s" % (len(grp["engines"]), ", ".join(grp["engines"])))
         for name in res["removed"]:
             print("    %s superseded fp task %r" % (remove_verb, name))
         for skipped in res["skipped"]:

@@ -409,18 +409,19 @@ fp changes pending --json | jq -c 'select(.approved_on == "")'
 
 ## fp tasks
 
-Scheduled-task management. Currently one action:
-`policies set-refresh` — schedule a policy refresh of **every engine** in a
-domain (or every domain) at **04:30 in each engine's own timezone**.
+Scheduled-task management:
+`policies set-refresh` schedules a policy refresh of **every engine** in a
+domain (or every domain) at **04:30 in each engine's own timezone**;
+`policies status` reports (and emails) engines whose refresh failed or stopped.
 
 ```
 $ fp tasks policies set-refresh --when daily --domain all --dry-run
-fp tasks: profile=default url=https://smc.acme.example:8082 domains=all when=daily at 04:30 engine-local time (engines without a timezone: UTC) [dry run]
+fp tasks: profile=default url=https://smc.acme.example:8082 domains=all when=daily at 04:30 engine-local time (engines without a timezone: UTC) policy validation=off [dry run]
 Acme-Corp:
-    create 'fp - Refresh Policy (Europe/Rome)' - first run Sat 2026-09-26 04:30 CEST (02:30 UTC)
-        engines (2): fw-cluster-1, fw-branch-2
-    create 'fp - Refresh Policy (UTC)' - first run Sat 2026-09-26 04:30 UTC (04:30 UTC)
-        engines (1): fw-branch-3
+    create 'fp - Refresh Policy: fw-branch-2' - first run Sat 2026-09-26 04:30 CEST (02:30 UTC)
+    create 'fp - Refresh Policy: fw-branch-3' - first run Sat 2026-09-26 04:30 UTC (04:30 UTC)
+    create 'fp - Refresh Policy: fw-cluster-1' - first run Sat 2026-09-26 04:30 CEST (02:30 UTC)
+    would remove superseded fp task 'fp - Refresh Policy (Europe/Rome)'
     WARNING: existing task 'Refresh Policy' also refreshes 2 of these engines (--disable-overlapping to suspend it)
 Shared Domain: none (no refreshable engines)
 ```
@@ -436,11 +437,15 @@ How it behaves:
   property). An engine set to `Europe/Rome` is refreshed at 04:30 Rome time;
   an engine with no timezone — or UTC — at 04:30 UTC (`--timezone` changes
   that fallback). The SMC stores the start in UTC.
-- **One task per domain and timezone, owned by fp**, named
-  `fp - Refresh Policy (<timezone>)`. Re-running updates those tasks in place
-  (engine list and schedule), so it is safe to re-run after adding engines,
+- **One task per engine, owned by fp**, named `fp - Refresh Policy: <engine>`.
+  A policy upload to an engine the SMC cannot reach never finishes: its task
+  stays "running" and the SMC skips every later schedule of that task. With
+  one task per engine only the unreachable engine stops being refreshed, and
+  it resumes by itself once the engine is back. Re-running updates the tasks
+  in place (schedule, timezone), so it is safe to re-run after adding engines,
   changing an engine's timezone, or switching between `daily` and `weekly`.
-  fp tasks whose timezone group no longer exists are removed.
+  fp tasks that no longer match an engine — including the earlier
+  per-timezone `fp - Refresh Policy (<timezone>)` tasks — are removed.
 - **`Etc/GMT±N` timezones are flagged**: their sign is inverted
   (`Etc/GMT+1` is UTC−01:00), so they are usually a mistake for CET. They are
   honoured as configured, with a `WARNING`.
